@@ -1,4 +1,3 @@
-from depthai_sdk import OakCamera, DetectionPacket, Visualizer
 from foxgloveComms import FoxgloveUploader
 from cameraData import CameraData
 import depthai as dai
@@ -8,64 +7,77 @@ import cv2
 ENABLE_CV2 = True
 ENABLE_FOXGLOVE = True
 
+def createPipeline():
+  pipeline = dai.Pipeline()
+
+  camRgb = pipeline.createColorCamera()
+  camRgb.setIspScale(1, 3)
+
+  colorOut = pipeline.createXLinkOut()
+  colorOut.setStreamName("color")
+  camRgb.isp.link(colorOut.input)
+
+  # Configure Camera Properties
+  left = pipeline.createMonoCamera()
+  left.setResolution(dai.MonoCameraProperties.SensorResolution.THE_480_P)
+  left.setBoardSocket(dai.CameraBoardSocket.LEFT)
+
+  # left camera output
+  leftOut = pipeline.createXLinkOut()
+  leftOut.setStreamName("left")
+  left.out.link(leftOut.input)
+
+  right = pipeline.createMonoCamera()
+  right.setResolution(dai.MonoCameraProperties.SensorResolution.THE_480_P)
+  right.setBoardSocket(dai.CameraBoardSocket.RIGHT)
+
+  # right camera output
+  rightOut = pipeline.createXLinkOut()
+  rightOut.setStreamName("right")
+  right.out.link(rightOut.input)
+
+  stereo = pipeline.createStereoDepth()
+  # configureDepthPostProcessing(stereo)
+  left.out.link(stereo.left)
+  right.out.link(stereo.right)
+
+  stereoOut = pipeline.createXLinkOut()
+  stereoOut.setStreamName("stereo")
+  stereo.disparity.link(stereoOut.input)
+
+  return pipeline
+
 def main(cameraData: CameraData) -> None:
-  with OakCamera(usbSpeed=dai.UsbSpeed.HIGH) as oak:
-    color = oak.create_camera('color')
-    left = oak.create_camera('left')
-    right = oak.create_camera('right')
-    nn = oak.create_nn('mobilenet-ssd', color)
-    imu = oak.create_imu()
-    imu.config_imu(report_rate=400, batch_report_threshold=5)
+  with dai.Device(createPipeline()) as device:
+    device.setIrFloodLightBrightness(200)
+    device.setIrLaserDotProjectorBrightness(200)
+    print("Opening device")
 
-    # Create visualization callbacks
-    def colorCb(packet: DetectionPacket, visualizer: Visualizer):
-      cameraData.setColorFrame(packet.frame)
-      if ENABLE_CV2:
-        cv2.imshow("colorFrame", packet.frame)
+    qColor = device.getOutputQueue("color", maxSize=1, blocking=False)
+    qLeft = device.getOutputQueue("left", maxSize=1, blocking=False)
+    qRight = device.getOutputQueue("right", maxSize=1, blocking=False)
+    qStereo = device.getOutputQueue("stereo", maxSize=1, blocking=False)
 
-    def leftCb(packet: DetectionPacket, visualizer: Visualizer):
-      cameraData.setLeftFrame(packet.frame)
-      if ENABLE_CV2:
-        cv2.imshow("leftFrame", packet.frame)
+    while True:
+      if qColor.has():
+        cameraData.setColorFrame(qColor.get().getCvFrame())
+        if ENABLE_CV2:
+          cv2.imshow("color", qColor.get().getCvFrame())
+      if qLeft.has():
+        cameraData.setLeftFrame(qLeft.get().getCvFrame())
+        if ENABLE_CV2:
+          cv2.imshow("left", qLeft.get().getCvFrame())
+      if qRight.has():
+        cameraData.setRightFrame(qRight.get().getCvFrame())
+        if ENABLE_CV2:
+          cv2.imshow("right", qRight.get().getCvFrame())
+      if qStereo.has():
+        cameraData.setStereoFrame(qStereo.get().getCvFrame())
+        if ENABLE_CV2:
+          cv2.imshow("stereo", qStereo.get().getCvFrame())
 
-    def rightCb(packet: DetectionPacket, visualizer: Visualizer):
-      cameraData.setRightFrame(packet.frame)
-      if ENABLE_CV2:
-        cv2.imshow("rightFrame", packet.frame)
-
-    def nnCb(packet: DetectionPacket, visualizer: Visualizer):
-      cameraData.setNnFrame(packet.frame)
-      if ENABLE_CV2:
-        cv2.imshow("nnFrame", packet.frame)
-
-    def imuCb(packet: DetectionPacket, visualizer: Visualizer):
-      cameraData.setIMU(packet.frame)
-
-
-    oak.visualize(nn, fps=True, callback=nnCb)
-    oak.visualize(color, fps=True, callback=colorCb)
-    oak.visualize(left, fps=True, callback=leftCb)
-    oak.visualize(right, fps=True, callback=rightCb)
-    #oak.visualize(imu, fps=True, callback=imuCb)
-
-
-    pipeline = oak.build()
-
-    nn.node.setNumInferenceThreads(2)
-
-    features = pipeline.create(dai.node.FeatureTracker)
-    color.node.video.link(features.inputImage)
-
-    out = pipeline.create(dai.node.XLinkOut)
-    out.setStreamName('features')
-    features.outputFeatures.link(out.input)
-
-    # Start the pipeline (upload it to the OAK)
-    oak.start()
-
-
-    while running and oak.running():
-      oak.poll()
+      if cv2.waitKey(1) == "q":
+        break
 
 
 if __name__ == "__main__":

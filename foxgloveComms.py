@@ -54,7 +54,7 @@ class FoxgloveUploader():
   async def _run(self, camData: CameraData):
     async with FoxgloveServer(self.address, self.port, self.name) as server:
       server.set_listener(self.Listener())
-      videoStreams = ["color", "nn", "left", "right"]
+      videoStreams = ["color", "nn", "left", "right", "stereo"]
       channels = {}
 
       for videoStream in videoStreams:
@@ -87,6 +87,9 @@ class FoxgloveUploader():
             raw_image.encoding = "mono8"
           elif videoStream == "right":
             frame = camData.getRightFrame()
+            raw_image.encoding = "mono8"
+          elif videoStream == "stereo":
+            frame = camData.getStereoFrame()
             raw_image.encoding = "mono8"
 
           raw_image.width = frame.shape[1]
