@@ -1,5 +1,6 @@
 import numpy as np
 import threading
+import cv2
 
 class CameraData():
   def __init__(self):
@@ -27,8 +28,10 @@ class CameraData():
     return data
 
   def __setData(self, name: str, value: any) -> None:
+    encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 90]
+    result, encimg = cv2.imencode('.jpg', value, encode_param)
     self.lock.acquire()
-    self.__dict__[name] = value
+    self.__dict__[name] = encimg
     self.lock.release()
 
   def getColorFrame(self) -> np.ndarray:

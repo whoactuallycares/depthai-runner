@@ -1,5 +1,5 @@
 from foxglove_websocket.server import FoxgloveServer, FoxgloveServerListener
-from foxglove_schemas_protobuf.RawImage_pb2 import RawImage
+from foxglove_schemas_protobuf.CompressedImage_pb2 import CompressedImage
 from foxglove_websocket import run_cancellable
 from foxglove_websocket.types import ChannelId
 from google.protobuf.descriptor_pb2 import FileDescriptorSet
@@ -62,9 +62,9 @@ class FoxgloveUploader():
           {
             "topic": f"raw_{videoStream}",
             "encoding": "protobuf",
-            "schemaName": RawImage.DESCRIPTOR.full_name,
+            "schemaName": CompressedImage.DESCRIPTOR.full_name,
             "schema": b64encode(
-              build_file_descriptor_set(RawImage).SerializeToString()
+              build_file_descriptor_set(CompressedImage).SerializeToString()
             ).decode("ascii"),
           }
         )
@@ -73,27 +73,21 @@ class FoxgloveUploader():
         await asyncio.sleep(1 / 60)
 
         for videoStream in videoStreams:
-          raw_image = RawImage()
+          raw_image = CompressedImage()
           raw_image.frame_id = f"raw_{videoStream}"
+          raw_image.format = "jpeg"
 
           if videoStream == "color":
             frame = camData.getColorFrame()
-            raw_image.encoding = "bgr8"
           elif videoStream == "nn":
             frame = camData.getNnFrame()
-            raw_image.encoding = "bgr8"
           elif videoStream == "left":
             frame = camData.getLeftFrame()
-            raw_image.encoding = "mono8"
           elif videoStream == "right":
             frame = camData.getRightFrame()
-            raw_image.encoding = "mono8"
           elif videoStream == "stereo":
             frame = camData.getStereoFrame()
-            raw_image.encoding = "mono8"
 
-          raw_image.width = frame.shape[1]
-          raw_image.height = frame.shape[0]
           raw_image.data = bytes(frame)
           raw_image.timestamp.FromNanoseconds(time.time_ns())
 
