@@ -58,7 +58,7 @@ def main(cameraData: CameraData) -> None:
     qRight = device.getOutputQueue("right", maxSize=1, blocking=False)
     qStereo = device.getOutputQueue("stereo", maxSize=1, blocking=False)
 
-    while True:
+    while running:
       if qColor.has():
         cameraData.setColorFrame(qColor.get().getCvFrame())
         if ENABLE_CV2:
