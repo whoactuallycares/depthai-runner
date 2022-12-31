@@ -65,7 +65,9 @@ class CameraData():
     self.__setData("nnFrame", value)
 
   def getIMU(self) -> dict:
-    return self.__getData("imu")
+    return self.imu
+    #return self.__getData("imu")
 
-  def setUMU(self, value: dict) -> None:
-    self.__setData("imu", value)
+  def setIMU(self, value: dict) -> None:
+    self.imu = value
+    #self.__setData("imu", value)

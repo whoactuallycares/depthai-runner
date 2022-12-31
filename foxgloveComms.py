@@ -9,6 +9,7 @@ from base64 import b64encode
 from typing import Set, Type
 import logging
 import asyncio
+import json
 import time
 
 from cameraData import CameraData
@@ -60,7 +61,7 @@ class FoxgloveUploader():
       for videoStream in videoStreams:
         channels[videoStream] = await server.add_channel(
           {
-            "topic": f"raw_{videoStream}",
+            "topic": f"vid_{videoStream}",
             "encoding": "protobuf",
             "schemaName": CompressedImage.DESCRIPTOR.full_name,
             "schema": b64encode(
@@ -69,12 +70,44 @@ class FoxgloveUploader():
           }
         )
 
+      imuchannel = await server.add_channel(
+        {
+          "topic": "imu",
+          "encoding": "json",
+          "schemaName": "com.luxonis.imu",
+          "schema": json.dumps(
+            {
+              "type": "object",
+              "properties": {
+                "timestamp": {"type": "integer"},
+                "gyroscope": {
+                  "type": "object",
+                  "properties": {
+                    "x": {"type": "number"},
+                    "y": {"type": "number"},
+                    "z": {"type": "number"},
+                  },
+                },
+                "accelerometer": {
+                  "type": "object",
+                  "properties": {
+                    "x": {"type": "number"},
+                    "y": {"type": "number"},
+                    "z": {"type": "number"},
+                  },
+                },
+              },
+            },
+          ),
+        }
+      )
+
       while True:
         await asyncio.sleep(1 / 60)
 
         for videoStream in videoStreams:
           raw_image = CompressedImage()
-          raw_image.frame_id = f"raw_{videoStream}"
+          raw_image.frame_id = f"vid_{videoStream}"
           raw_image.format = "jpeg"
 
           if videoStream == "color":
@@ -92,6 +125,8 @@ class FoxgloveUploader():
           raw_image.timestamp.FromNanoseconds(time.time_ns())
 
           await server.send_message(channels[videoStream], time.time_ns(), raw_image.SerializeToString())
+        if camData.getIMU() != {}:
+          await server.send_message(imuchannel, time.time_ns(), json.dumps(camData.getIMU()).encode("utf8"))
 
   def run(self, camData: CameraData):
     run_cancellable(self._run(camData))
