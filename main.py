@@ -1,10 +1,14 @@
 from foxgloveComms import FoxgloveUploader
 from cameraData import CameraData
 import depthai as dai
+import websockets
 import threading
+import asyncio
+import time
+import json
 import cv2
 
-ENABLE_CV2 = True
+ENABLE_CV2 = False
 ENABLE_FOXGLOVE = True
 
 def createPipeline():
@@ -47,18 +51,26 @@ def createPipeline():
 
   return pipeline
 
+async def messageHandler(websocket, path):
+  async for message in websocket:
+    try:
+      command = json.dumps(message)
+      print(f"Got json command {command}")
+    except:
+      print(f"Received invalid json: {message}")
+
+async def startServer():
+  server = await websockets.serve(messageHandler, "localhost", 8766)
+  await server.wait_closed()
+
 def main(cameraData: CameraData) -> None:
   with dai.Device(createPipeline()) as device:
-    device.setIrFloodLightBrightness(200)
-    device.setIrLaserDotProjectorBrightness(200)
-    print("Opening device")
-
     qColor = device.getOutputQueue("color", maxSize=1, blocking=False)
     qLeft = device.getOutputQueue("left", maxSize=1, blocking=False)
     qRight = device.getOutputQueue("right", maxSize=1, blocking=False)
     qStereo = device.getOutputQueue("stereo", maxSize=1, blocking=False)
 
-    while running:
+    while not shouldStop.is_set():
       if qColor.has():
         cameraData.setColorFrame(qColor.get().getCvFrame())
         if ENABLE_CV2:
@@ -76,20 +88,34 @@ def main(cameraData: CameraData) -> None:
         if ENABLE_CV2:
           cv2.imshow("stereo", qStereo.get().getCvFrame())
 
+      # Check for commands
+
       if cv2.waitKey(1) == "q":
         break
 
 
+
+# Start the server in a separate thread
+
 if __name__ == "__main__":
 
   cd = CameraData()
+  shouldStop = threading.Event()
+  receiverThread = threading.Thread(target=asyncio.run, args=(startServer(),))
+  receiverThread.start()
 
-  running = threading.Event()
-  thread = threading.Thread(target=main, args=(cd,))
-  thread.start()
+  senderThread = threading.Thread(target=main, args=(cd,))
+  senderThread.start()
 
   if ENABLE_FOXGLOVE:
     fgUp = FoxgloveUploader()
     fgUp.run(cd)
-    running = False
-    thread.join()
+  else:
+    while True:
+      try:
+        time.sleep(1)
+      except KeyboardInterrupt:
+        break
+  shouldStop.set()
+  senderThread.join()
+  receiverThread.join()
