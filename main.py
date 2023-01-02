@@ -1,6 +1,8 @@
 from foxgloveComms import FoxgloveUploader
 from cameraData import CameraData
+from nnHandler import NNHandler
 import depthai as dai
+import blobconverter
 import websockets
 import threading
 import asyncio
@@ -8,18 +10,40 @@ import time
 import json
 import cv2
 
-ENABLE_CV2 = False
-ENABLE_FOXGLOVE = True
+ENABLE_CV2 = True
+ENABLE_FOXGLOVE = False
+nn = {}
+
+yoloBlobPath = blobconverter.from_zoo(name="yolop_320x320", zoo_type="depthai", shaves=6)
+faceDetectionBlobPath = blobconverter.from_zoo(name="face-detection-retail-0004", shaves=6)
+
+blobPaths = [yoloBlobPath, faceDetectionBlobPath, faceDetectionBlobPath]
+
+nnHandlers = [
+  NNHandler(blobpath=blobconverter.from_zoo(name="yolo-v3-tiny-tf", shaves=6), inputSize=(416,416), interleaved=False)
+  ]
 
 def createPipeline():
   pipeline = dai.Pipeline()
 
   camRgb = pipeline.createColorCamera()
   camRgb.setIspScale(1, 3)
+  camRgb.setResolution(dai.ColorCameraProperties.SensorResolution.THE_1080_P)
 
   colorOut = pipeline.createXLinkOut()
   colorOut.setStreamName("color")
   camRgb.isp.link(colorOut.input)
+
+  scaleManip = pipeline.createImageManip()
+  camRgb.preview.link(scaleManip.inputImage)
+
+  global nn
+  nn = nnHandlers[0].create(pipeline, scaleManip)
+
+  # Send NN out to the host via XLink
+  nnOut = pipeline.create(dai.node.XLinkOut)
+  nnOut.setStreamName("nn")
+  nn.out.link(nnOut.input)
 
   # Configure Camera Properties
   left = pipeline.createMonoCamera()
@@ -63,16 +87,22 @@ def createPipeline():
 
 irValue = 0
 irValueLast = 0
+selectedNN = 0
+selectedNNLast = 0
 
 async def messageHandler(websocket, path):
   async for message in websocket:
     try:
-      command = json.dumps(message)
-      print(f"Got json command {command}")
+      print(f"Got json command {message}")
+      if message[:6] == "option":
+        print("selecting option")
+        global selectedNN
+        selectedNN = int(message[-1]) - 1
       if message[:6] == "Slider":
         global irValue
         irValue = int(message[8:])
         print(f"IR value now {irValue}")
+      #command = json.dumps(message)
     except:
       print(f"Received invalid json: {message}")
 
@@ -87,24 +117,31 @@ def main(cameraData: CameraData) -> None:
     qRight = device.getOutputQueue("right", maxSize=1, blocking=False)
     qStereo = device.getOutputQueue("stereo", maxSize=1, blocking=False)
     qIMU = device.getOutputQueue("imu", maxSize=1, blocking=False)
+    qNN = device.getOutputQueue("nn", maxSize=1, blocking=False)
 
+    colorFrame = None
     while not shouldStop.is_set():
       if qColor.has():
-        cameraData.setColorFrame(qColor.get().getCvFrame())
+        colorFrame = qColor.get().getCvFrame()
+        cameraData.setColorFrame(colorFrame)
         if ENABLE_CV2:
-          cv2.imshow("color", qColor.get().getCvFrame())
+          cv2.imshow("color", colorFrame)
       if qLeft.has():
-        cameraData.setLeftFrame(qLeft.get().getCvFrame())
+        leftFrame = qLeft.get().getCvFrame()
         if ENABLE_CV2:
-          cv2.imshow("left", qLeft.get().getCvFrame())
+          cv2.imshow("left", leftFrame)
       if qRight.has():
-        cameraData.setRightFrame(qRight.get().getCvFrame())
+        rightFrame = qRight.get().getCvFrame()
         if ENABLE_CV2:
-          cv2.imshow("right", qRight.get().getCvFrame())
+          cv2.imshow("right", rightFrame)
       if qStereo.has():
-        cameraData.setStereoFrame(qStereo.get().getCvFrame())
+        stereoFrame = qStereo.get().getCvFrame()
         if ENABLE_CV2:
-          cv2.imshow("stereo", qStereo.get().getCvFrame())
+          cv2.imshow("stereo", stereoFrame)
+      if qNN.has():
+        if colorFrame is not None:
+          nnHandlers[0].draw(qNN.get().detections, colorFrame)
+          cv2.imshow("nn", colorFrame)
       if qIMU.has():
         for packet in qIMU.get().packets:
           imuData = {
@@ -121,11 +158,15 @@ def main(cameraData: CameraData) -> None:
             }
           }
           cameraData.setIMU(imuData)
-      global irValue, irValueLast
+      global irValue, irValueLast, selecteNN, selectedNNLast, nn
       if irValue != irValueLast:
         print(f"Setting IR value to {irValue*2}")
         irValueLast = irValue
         device.setIrLaserDotProjectorBrightness(2*irValue)
+      if selectedNN != selectedNNLast:
+        print(f"Selecting nn {selectedNN}")
+        selectedNNLast = selectedNN
+        nn.setBlobPath(blobPaths[selectedNN])
 
       # Check for commands
 
