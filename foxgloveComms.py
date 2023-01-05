@@ -1,5 +1,7 @@
 from foxglove_websocket.server import FoxgloveServer, FoxgloveServerListener
 from foxglove_schemas_protobuf.CompressedImage_pb2 import CompressedImage
+from foxglove_schemas_protobuf.PointCloud_pb2 import PointCloud
+from foxglove_schemas_protobuf.PackedElementField_pb2 import PackedElementField
 from foxglove_websocket import run_cancellable
 from foxglove_websocket.types import ChannelId
 from google.protobuf.descriptor_pb2 import FileDescriptorSet
@@ -11,6 +13,7 @@ import logging
 import asyncio
 import json
 import time
+import struct
 
 from cameraData import CameraData
 
@@ -70,7 +73,7 @@ class FoxgloveUploader():
           }
         )
 
-      imuchannel = await server.add_channel(
+      IMUChan = await server.add_channel(
         {
           "topic": "imu",
           "encoding": "json",
@@ -102,6 +105,17 @@ class FoxgloveUploader():
         }
       )
 
+      pointCloudChan = await server.add_channel(
+        {
+          "topic": "pointcloud",
+          "encoding": "protobuf",
+          "schemaName": PointCloud.DESCRIPTOR.full_name,
+          "schema": b64encode(
+            build_file_descriptor_set(PointCloud).SerializeToString()
+          ).decode("ascii"),
+        }
+      )
+
       while True:
         await asyncio.sleep(1 / 60)
 
@@ -126,7 +140,27 @@ class FoxgloveUploader():
 
           await server.send_message(channels[videoStream], time.time_ns(), raw_image.SerializeToString())
         if camData.getIMU() != {}:
-          await server.send_message(imuchannel, time.time_ns(), json.dumps(camData.getIMU()).encode("utf8"))
+          await server.send_message(IMUChan, time.time_ns(), json.dumps(camData.getIMU()).encode("utf8"))
+        
+        pointcloud = PointCloud()
+        pointcloud.timestamp.FromNanoseconds(time.time_ns())
+        pointcloud.frame_id = "test"
+        element = PackedElementField()
+        element.name = "pos"
+        element.offset = 0
+        pointcloud.data = struct.pack("III", 0, 0, 0)
+        pointcloud.point_stride = 4 * 3
+        pointcloud.pose.position.x = 0
+        pointcloud.pose.position.y = 0
+        pointcloud.pose.position.z = 0
+        pointcloud.pose.orientation.x = 0
+        pointcloud.pose.orientation.y = 0
+        pointcloud.pose.orientation.z = 0
+        pointcloud.pose.orientation.w = 1
+        pointcloud.fields.append(PackedElementField(name="x", offset=0, type=7))
+        pointcloud.fields.append(PackedElementField(name="y", offset=4, type=7))
+        pointcloud.fields.append(PackedElementField(name="z", offset=8, type=7))
+        await server.send_message(pointCloudChan, time.time_ns(), pointcloud.SerializeToString())
 
   def run(self, camData: CameraData):
     run_cancellable(self._run(camData))
