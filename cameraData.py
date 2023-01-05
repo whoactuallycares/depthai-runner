@@ -19,6 +19,7 @@ class CameraData():
     self.rightFrame = emptyFrame
     self.nnFrame = emptyFrame
     self.imu = {}
+    self.pointcloud = np.zeros((3))
     self.lock = threading.Lock()
 
   def __getData(self, name: str) -> any:
@@ -70,4 +71,12 @@ class CameraData():
 
   def setIMU(self, value: dict) -> None:
     self.imu = value
+    #self.__setData("imu", value)
+
+  def getPointcloud(self) -> dict:
+    return self.pointcloud
+    #return self.__getData("imu")
+
+  def setPointcloud(self, value: dict) -> None:
+    self.pointcloud = value
     #self.__setData("imu", value)

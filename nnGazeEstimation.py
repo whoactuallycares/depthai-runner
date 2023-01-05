@@ -182,7 +182,7 @@ class GazeEstimationNetwork(Network):
       except RuntimeError as ex:
         continue
 
-  def createNodes(self, pipeline: dai.Pipeline, camRgb: dai.node.ColorCamera, sync: bool = True) -> None:
+  def createNodes(self, pipeline: dai.Pipeline, camRgb: dai.node.ColorCamera, stereo: dai.node.StereoDepth = None, sync: bool = True) -> None:
     face_nn = pipeline.create(dai.node.NeuralNetwork)
     face_nn.setBlobPath(blobconverter.from_zoo(name="face-detection-retail-0004", shaves=4))
 

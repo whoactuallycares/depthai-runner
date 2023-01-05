@@ -7,7 +7,7 @@ class Network():
     self._has = False
     pass
 
-  def createNodes(self, pipeline: dai.Pipeline, camRgb: dai.node.ColorCamera, sync: bool = True) -> None:
+  def createNodes(self, pipeline: dai.Pipeline, camRgb: dai.node.ColorCamera, stereo: dai.node.StereoDepth = None, sync: bool = True) -> None:
     raise NotImplementedError()
 
   def frame(self) -> cv2.Mat:
@@ -16,7 +16,7 @@ class Network():
   def draw(self, frame: cv2.Mat) -> None:
     raise NotImplementedError()
 
-  def start(self) -> None:
+  def start(self, device: dai.Device):
     raise NotImplementedError()
 
   def stop(self) -> None:

@@ -148,18 +148,12 @@ class FoxgloveUploader():
         element = PackedElementField()
         element.name = "pos"
         element.offset = 0
-        pointcloud.data = struct.pack("III", 0, 0, 0)
-        pointcloud.point_stride = 4 * 3
-        pointcloud.pose.position.x = 0
-        pointcloud.pose.position.y = 0
-        pointcloud.pose.position.z = 0
-        pointcloud.pose.orientation.x = 0
-        pointcloud.pose.orientation.y = 0
-        pointcloud.pose.orientation.z = 0
-        pointcloud.pose.orientation.w = 1
-        pointcloud.fields.append(PackedElementField(name="x", offset=0, type=7))
-        pointcloud.fields.append(PackedElementField(name="y", offset=4, type=7))
-        pointcloud.fields.append(PackedElementField(name="z", offset=8, type=7))
+        #pointcloud.data = struct.pack("III", 0, 0, 0)
+        pointcloud.data = camData.getPointcloud().tobytes()
+        pointcloud.point_stride = 8 * 3
+        pointcloud.fields.append(PackedElementField(name="x", offset=0, type=8))
+        pointcloud.fields.append(PackedElementField(name="y", offset=8, type=8))
+        pointcloud.fields.append(PackedElementField(name="z", offset=16, type=8))
         await server.send_message(pointCloudChan, time.time_ns(), pointcloud.SerializeToString())
 
   def run(self, camData: CameraData):

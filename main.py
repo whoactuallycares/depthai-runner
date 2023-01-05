@@ -1,19 +1,22 @@
 from nnGazeEstimation import GazeEstimationNetwork
+from nnPointcloud import PointcloudNetwork
 from foxgloveComms import FoxgloveUploader
 from nnHumanPose import HumanPoseNetwork
 from cameraData import CameraData
 from nnYolo import YoloNetwork
 import depthai as dai
+import numpy as np
 import websockets
 import threading
 import asyncio
 import time
+import json
 import cv2
 
-ENABLE_CV2 = True
+ENABLE_CV2 = False
 ENABLE_FOXGLOVE = True
-nn = {}
-
+ENABLE_IMU = True
+ENABLE_POINTCLOUD = True
 
 allNetworks = [
   HumanPoseNetwork(),
@@ -27,29 +30,54 @@ networkMap = {
   "gaze" : GazeEstimationNetwork(),
 }
 
-activeNetwork = allNetworks[0]
+activeNetwork = YoloNetwork()
+pointcloud = PointcloudNetwork()
+
+def configureDepthPostProcessing(stereoDepthNode: dai.node.StereoDepth, lrcheck: bool = True, extended: bool = False, subpixel: bool = True) -> None:
+  """
+  In-place post-processing configuration for a stereo depth node
+  The best combo of filters is application specific. Hard to say there is a one size fits all.
+  They also are not free. Even though they happen on device, you pay a penalty in fps.
+  """
+  stereoDepthNode.setDefaultProfilePreset(dai.node.StereoDepth.PresetMode.HIGH_DENSITY)
+
+  #stereoDepthNode.initialConfig.setBilateralFilterSigma(16)
+  config = stereoDepthNode.initialConfig.get()
+  config.postProcessing.speckleFilter.enable = True
+  config.postProcessing.speckleFilter.speckleRange = 60
+  config.postProcessing.temporalFilter.enable = True
+
+  config.postProcessing.spatialFilter.holeFillingRadius = 2
+  config.postProcessing.spatialFilter.numIterations = 1
+  config.postProcessing.thresholdFilter.minRange = 700  # mm
+  config.postProcessing.thresholdFilter.maxRange = 4000  # mm
+  #config.postProcessing.decimationFilter.decimationFactor = 1
+  config.censusTransform.enableMeanMode = True
+  config.costMatching.linearEquationParameters.alpha = 0
+  config.costMatching.linearEquationParameters.beta = 2
+  stereoDepthNode.initialConfig.set(config)
+  stereoDepthNode.setLeftRightCheck(lrcheck)
+  stereoDepthNode.setExtendedDisparity(extended)
+  #stereoDepthNode.setSubpixel(subpixel)
+  stereoDepthNode.setRectifyEdgeFillColor(0)  # Black, to better see the cutout
 
 def createPipeline():
   pipeline = dai.Pipeline()
 
   camRgb = pipeline.createColorCamera()
   camRgb.setIspScale(1, 3)
-  camRgb.setFps(40)
-  camRgb.setResolution(dai.ColorCameraProperties.SensorResolution.THE_1080_P)
+  #camRgb.setFps(40)
+  #camRgb.setResolution(dai.ColorCameraProperties.SensorResolution.THE_1080_P)
 
   colorOut = pipeline.createXLinkOut()
   colorOut.setStreamName("color")
   camRgb.isp.link(colorOut.input)
 
-  #scaleManip = pipeline.createImageManip()
-  #camRgb.preview.link(scaleManip.inputImage)
-
-  activeNetwork.createNodes(pipeline, camRgb, sync=False)
 
   # Configure Camera Properties
   left = pipeline.createMonoCamera()
-  left.setResolution(dai.MonoCameraProperties.SensorResolution.THE_480_P)
   left.setBoardSocket(dai.CameraBoardSocket.LEFT)
+  left.setResolution(dai.MonoCameraProperties.SensorResolution.THE_400_P)
 
   # left camera output
   leftOut = pipeline.createXLinkOut()
@@ -57,8 +85,8 @@ def createPipeline():
   left.out.link(leftOut.input)
 
   right = pipeline.createMonoCamera()
-  right.setResolution(dai.MonoCameraProperties.SensorResolution.THE_480_P)
   right.setBoardSocket(dai.CameraBoardSocket.RIGHT)
+  right.setResolution(dai.MonoCameraProperties.SensorResolution.THE_400_P)
 
   # right camera output
   rightOut = pipeline.createXLinkOut()
@@ -66,26 +94,32 @@ def createPipeline():
   right.out.link(rightOut.input)
 
   stereo = pipeline.createStereoDepth()
-  stereo.initialConfig.setMedianFilter(dai.MedianFilter.KERNEL_7x7)
-  stereo.setLeftRightCheck(True)
+  configureDepthPostProcessing(stereo)
+  #stereo.initialConfig.setMedianFilter(dai.MedianFilter.KERNEL_7x7)
+  #stereo.setLeftRightCheck(True)
 
-  # configureDepthPostProcessing(stereo)
   left.out.link(stereo.left)
   right.out.link(stereo.right)
 
   stereoOut = pipeline.createXLinkOut()
   stereoOut.setStreamName("stereo")
-  stereo.disparity.link(stereoOut.input)
+  stereo.depth.link(stereoOut.input)
 
-  imu = pipeline.create(dai.node.IMU)
-  imu.enableIMUSensor(dai.IMUSensor.ACCELEROMETER_RAW, 100)
-  imu.enableIMUSensor(dai.IMUSensor.GYROSCOPE_RAW, 100)
-  imu.setBatchReportThreshold(1)
-  imu.setMaxBatchReports(10)
+  if ENABLE_IMU:
+    imu = pipeline.create(dai.node.IMU)
+    imu.enableIMUSensor(dai.IMUSensor.ACCELEROMETER_RAW, 100)
+    imu.enableIMUSensor(dai.IMUSensor.GYROSCOPE_RAW, 100)
+    imu.setBatchReportThreshold(1)
+    imu.setMaxBatchReports(10)
 
-  xlinkOut = pipeline.create(dai.node.XLinkOut)
-  xlinkOut.setStreamName("imu")
-  imu.out.link(xlinkOut.input)
+    xlinkOut = pipeline.create(dai.node.XLinkOut)
+    xlinkOut.setStreamName("imu")
+    imu.out.link(xlinkOut.input)
+
+  activeNetwork.createNodes(pipeline, camRgb, stereo=stereo, sync=False)
+
+  if ENABLE_POINTCLOUD:
+    pointcloud.createNodes(pipeline, camRgb, stereo=stereo, sync=False)
 
   return pipeline
 
@@ -95,6 +129,7 @@ selectedNN = 0
 selectedNNLast = 0
 
 async def messageHandler(websocket, path):
+  global activeNetwork
   async for message in websocket:
     try:
       print(f"Got json command {message}")
@@ -106,7 +141,16 @@ async def messageHandler(websocket, path):
         global irValue
         irValue = int(message[8:])
         print(f"IR value now {irValue}")
-      #command = json.dumps(message)
+      command = json.dumps(message)
+
+
+      if command["command"] == None:
+        continue
+      elif command["command"] == "set-nn":
+        activeNetwork = networkMap[command["args"]]
+      elif command["command"] == "set-ir":
+        irValue = int(command["args"])
+
     except:
       print(f"Received invalid json: {message}")
 
@@ -119,38 +163,41 @@ def main(cameraData: CameraData) -> None:
   while not shouldStop.is_set(): # To allow for pipeline recreation
     with dai.Device(createPipeline()) as device:
       device.setIrLaserDotProjectorBrightness(800)
+      pointcloud.start(device, cameraData)
       activeNetwork.start(device)
       qColor = device.getOutputQueue("color", maxSize=1, blocking=False)
       qLeft = device.getOutputQueue("left", maxSize=1, blocking=False)
       qRight = device.getOutputQueue("right", maxSize=1, blocking=False)
       qStereo = device.getOutputQueue("stereo", maxSize=1, blocking=False)
-      qIMU = device.getOutputQueue("imu", maxSize=1, blocking=False)
+      if ENABLE_IMU:
+        qIMU = device.getOutputQueue("imu", maxSize=1, blocking=False)
 
-      colorFrame = None
       while not shouldStop.is_set() or shouldRestart.is_set():
+        cameraData.setPointcloud(pointcloud.pcl_data)
         if qColor.has():
-          packet = qColor.get()
-          print(f"SeqNC {packet.getSequenceNum()}")
-          colorFrame = packet.getCvFrame()
-          activeNetwork.draw(colorFrame)
+          colorFrame = qColor.get().getCvFrame()
+          #activeNetwork.draw(colorFrame)
           cameraData.setColorFrame(colorFrame)
           if ENABLE_CV2:
             cv2.imshow("color", colorFrame)
-        #if activeNetwork.has():
-        #  cv2.imshow("nn", activeNetwork.frame())
+        # #if activeNetwork.has():
+        # #  cv2.imshow("nn", activeNetwork.frame())
         if qLeft.has():
           leftFrame = qLeft.get().getCvFrame()
+          cameraData.setLeftFrame(leftFrame)
           if ENABLE_CV2:
             cv2.imshow("left", leftFrame)
         if qRight.has():
           rightFrame = qRight.get().getCvFrame()
+          cameraData.setRightFrame(rightFrame)
           if ENABLE_CV2:
             cv2.imshow("right", rightFrame)
         if qStereo.has():
-          stereoFrame = cv2.applyColorMap(qStereo.get().getCvFrame(), cv2.COLORMAP_JET)
+          stereoFrame = qStereo.get().getCvFrame()
+          cameraData.setStereoFrame(stereoFrame)
           if ENABLE_CV2:
             cv2.imshow("stereo", stereoFrame)
-        if qIMU.has():
+        if ENABLE_IMU and qIMU.has():
           for packet in qIMU.get().packets:
             imuData = {
               "timestamp": 0,
@@ -166,15 +213,11 @@ def main(cameraData: CameraData) -> None:
               }
             }
             cameraData.setIMU(imuData)
-        global irValue, irValueLast, selecteNN, selectedNNLast, nn
+        global irValue, irValueLast, selecteNN, selectedNNLast
         if irValue != irValueLast:
           print(f"Setting IR value to {irValue*2}")
           irValueLast = irValue
           device.setIrLaserDotProjectorBrightness(2*irValue)
-        if selectedNN != selectedNNLast:
-          print(f"Selecting nn {selectedNN}")
-          selectedNNLast = selectedNN
-          nn.setBlobPath(blobPaths[selectedNN])
 
         # Check for commands
 

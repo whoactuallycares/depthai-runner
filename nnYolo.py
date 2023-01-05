@@ -38,7 +38,7 @@ class YoloNetwork(Network):
       except RuntimeError as ex:
         continue
 
-  def createNodes(self, pipeline: dai.Pipeline, camRgb: dai.node.ColorCamera, sync: bool = True) -> None:
+  def createNodes(self, pipeline: dai.Pipeline, camRgb: dai.node.ColorCamera, stereo: dai.node.StereoDepth = None, sync: bool = True) -> None:
     nn = pipeline.createYoloDetectionNetwork()
 
     nn.setConfidenceThreshold(0.5)
@@ -72,6 +72,7 @@ class YoloNetwork(Network):
   def start(self, device: dai.Device):
     self.device = device
     self.detections = []
+    self.queue = device.getOutputQueue("nn", maxSize=1, blocking=False)
     self.threads = [
       threading.Thread(target=self.nnThread),
     ]
