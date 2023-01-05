@@ -1,49 +1,50 @@
+from nnGazeEstimation import GazeEstimationNetwork
 from foxgloveComms import FoxgloveUploader
+from nnHumanPose import HumanPoseNetwork
 from cameraData import CameraData
-from nnHandler import NNHandler
+from nnYolo import YoloNetwork
 import depthai as dai
-import blobconverter
 import websockets
 import threading
 import asyncio
 import time
-import json
 import cv2
 
 ENABLE_CV2 = True
-ENABLE_FOXGLOVE = False
+ENABLE_FOXGLOVE = True
 nn = {}
 
-yoloBlobPath = blobconverter.from_zoo(name="yolop_320x320", zoo_type="depthai", shaves=6)
-faceDetectionBlobPath = blobconverter.from_zoo(name="face-detection-retail-0004", shaves=6)
 
-blobPaths = [yoloBlobPath, faceDetectionBlobPath, faceDetectionBlobPath]
+allNetworks = [
+  HumanPoseNetwork(),
+  YoloNetwork(),
+  GazeEstimationNetwork(),
+]
 
-nnHandlers = [
-  NNHandler(blobpath=blobconverter.from_zoo(name="yolo-v3-tiny-tf", shaves=6), inputSize=(416,416), interleaved=False)
-  ]
+networkMap = {
+  "pose" : HumanPoseNetwork(),
+  "yolo" : YoloNetwork(),
+  "gaze" : GazeEstimationNetwork(),
+}
+
+activeNetwork = allNetworks[0]
 
 def createPipeline():
   pipeline = dai.Pipeline()
 
   camRgb = pipeline.createColorCamera()
   camRgb.setIspScale(1, 3)
+  camRgb.setFps(40)
   camRgb.setResolution(dai.ColorCameraProperties.SensorResolution.THE_1080_P)
 
   colorOut = pipeline.createXLinkOut()
   colorOut.setStreamName("color")
   camRgb.isp.link(colorOut.input)
 
-  scaleManip = pipeline.createImageManip()
-  camRgb.preview.link(scaleManip.inputImage)
+  #scaleManip = pipeline.createImageManip()
+  #camRgb.preview.link(scaleManip.inputImage)
 
-  global nn
-  nn = nnHandlers[0].create(pipeline, scaleManip)
-
-  # Send NN out to the host via XLink
-  nnOut = pipeline.create(dai.node.XLinkOut)
-  nnOut.setStreamName("nn")
-  nn.out.link(nnOut.input)
+  activeNetwork.createNodes(pipeline, camRgb, sync=False)
 
   # Configure Camera Properties
   left = pipeline.createMonoCamera()
@@ -65,6 +66,9 @@ def createPipeline():
   right.out.link(rightOut.input)
 
   stereo = pipeline.createStereoDepth()
+  stereo.initialConfig.setMedianFilter(dai.MedianFilter.KERNEL_7x7)
+  stereo.setLeftRightCheck(True)
+
   # configureDepthPostProcessing(stereo)
   left.out.link(stereo.left)
   right.out.link(stereo.right)
@@ -111,68 +115,72 @@ async def startServer():
   await server.wait_closed()
 
 def main(cameraData: CameraData) -> None:
-  with dai.Device(createPipeline()) as device:
-    qColor = device.getOutputQueue("color", maxSize=1, blocking=False)
-    qLeft = device.getOutputQueue("left", maxSize=1, blocking=False)
-    qRight = device.getOutputQueue("right", maxSize=1, blocking=False)
-    qStereo = device.getOutputQueue("stereo", maxSize=1, blocking=False)
-    qIMU = device.getOutputQueue("imu", maxSize=1, blocking=False)
-    qNN = device.getOutputQueue("nn", maxSize=1, blocking=False)
+  global activeNetwork
+  while not shouldStop.is_set(): # To allow for pipeline recreation
+    with dai.Device(createPipeline()) as device:
+      device.setIrLaserDotProjectorBrightness(800)
+      activeNetwork.start(device)
+      qColor = device.getOutputQueue("color", maxSize=1, blocking=False)
+      qLeft = device.getOutputQueue("left", maxSize=1, blocking=False)
+      qRight = device.getOutputQueue("right", maxSize=1, blocking=False)
+      qStereo = device.getOutputQueue("stereo", maxSize=1, blocking=False)
+      qIMU = device.getOutputQueue("imu", maxSize=1, blocking=False)
 
-    colorFrame = None
-    while not shouldStop.is_set():
-      if qColor.has():
-        colorFrame = qColor.get().getCvFrame()
-        cameraData.setColorFrame(colorFrame)
-        if ENABLE_CV2:
-          cv2.imshow("color", colorFrame)
-      if qLeft.has():
-        leftFrame = qLeft.get().getCvFrame()
-        if ENABLE_CV2:
-          cv2.imshow("left", leftFrame)
-      if qRight.has():
-        rightFrame = qRight.get().getCvFrame()
-        if ENABLE_CV2:
-          cv2.imshow("right", rightFrame)
-      if qStereo.has():
-        stereoFrame = qStereo.get().getCvFrame()
-        if ENABLE_CV2:
-          cv2.imshow("stereo", stereoFrame)
-      if qNN.has():
-        if colorFrame is not None:
-          nnHandlers[0].draw(qNN.get().detections, colorFrame)
-          cv2.imshow("nn", colorFrame)
-      if qIMU.has():
-        for packet in qIMU.get().packets:
-          imuData = {
-            "timestamp": 0,
-            "gyroscope": {
-              "x": packet.gyroscope.x,
-              "y": packet.gyroscope.y,
-              "z": packet.gyroscope.z,
-            },
-            "accelerometer": {
-              "x": packet.acceleroMeter.x,
-              "y": packet.acceleroMeter.y,
-              "z": packet.acceleroMeter.z,
+      colorFrame = None
+      while not shouldStop.is_set() or shouldRestart.is_set():
+        if qColor.has():
+          packet = qColor.get()
+          print(f"SeqNC {packet.getSequenceNum()}")
+          colorFrame = packet.getCvFrame()
+          activeNetwork.draw(colorFrame)
+          cameraData.setColorFrame(colorFrame)
+          if ENABLE_CV2:
+            cv2.imshow("color", colorFrame)
+        #if activeNetwork.has():
+        #  cv2.imshow("nn", activeNetwork.frame())
+        if qLeft.has():
+          leftFrame = qLeft.get().getCvFrame()
+          if ENABLE_CV2:
+            cv2.imshow("left", leftFrame)
+        if qRight.has():
+          rightFrame = qRight.get().getCvFrame()
+          if ENABLE_CV2:
+            cv2.imshow("right", rightFrame)
+        if qStereo.has():
+          stereoFrame = cv2.applyColorMap(qStereo.get().getCvFrame(), cv2.COLORMAP_JET)
+          if ENABLE_CV2:
+            cv2.imshow("stereo", stereoFrame)
+        if qIMU.has():
+          for packet in qIMU.get().packets:
+            imuData = {
+              "timestamp": 0,
+              "gyroscope": {
+                "x": packet.gyroscope.x,
+                "y": packet.gyroscope.y,
+                "z": packet.gyroscope.z,
+              },
+              "accelerometer": {
+                "x": packet.acceleroMeter.x,
+                "y": packet.acceleroMeter.y,
+                "z": packet.acceleroMeter.z,
+              }
             }
-          }
-          cameraData.setIMU(imuData)
-      global irValue, irValueLast, selecteNN, selectedNNLast, nn
-      if irValue != irValueLast:
-        print(f"Setting IR value to {irValue*2}")
-        irValueLast = irValue
-        device.setIrLaserDotProjectorBrightness(2*irValue)
-      if selectedNN != selectedNNLast:
-        print(f"Selecting nn {selectedNN}")
-        selectedNNLast = selectedNN
-        nn.setBlobPath(blobPaths[selectedNN])
+            cameraData.setIMU(imuData)
+        global irValue, irValueLast, selecteNN, selectedNNLast, nn
+        if irValue != irValueLast:
+          print(f"Setting IR value to {irValue*2}")
+          irValueLast = irValue
+          device.setIrLaserDotProjectorBrightness(2*irValue)
+        if selectedNN != selectedNNLast:
+          print(f"Selecting nn {selectedNN}")
+          selectedNNLast = selectedNN
+          nn.setBlobPath(blobPaths[selectedNN])
 
-      # Check for commands
+        # Check for commands
 
-      if cv2.waitKey(1) == "q":
-        break
-
+        if cv2.waitKey(1) == "q":
+          break
+    shouldRestart.clear()
 
 
 # Start the server in a separate thread
@@ -181,6 +189,7 @@ if __name__ == "__main__":
 
   cd = CameraData()
   shouldStop = threading.Event()
+  shouldRestart = threading.Event()
   receiverThread = threading.Thread(target=asyncio.run, args=(startServer(),))
   receiverThread.start()
 

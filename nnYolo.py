@@ -1,15 +1,10 @@
-from enum import IntEnum
 import depthai as dai
 import blobconverter
 import numpy as np
+import threading
 import cv2
 
-class NNType(IntEnum):
-  New = -1
-  Yolo = 0
-  YoloSpatial = 1
-  MobileNet = 2
-  MobileNetSpatial = 3
+from networkBase import Network
 
 labelMap = [
     "person",         "bicycle",    "car",           "motorbike",     "aeroplane",   "bus",           "train",
@@ -31,50 +26,54 @@ def frameNorm(frame, bbox):
     normVals[::2] = frame.shape[1]
     return (np.clip(np.array(bbox), 0, 1) * normVals).astype(int)
 
-class NNHandler():
-  def __init__(self, blobpath, nnType=NNType.Yolo, inputSize: tuple[int, int] = (400, 400), interleaved = False):
-    self.nnType = nnType
-    self.interleaved = interleaved
-    self.blobpath = blobpath
-    self.inputSize = inputSize
-    self.network = None
+class YoloNetwork(Network):
+  def __init__(self):
+    super().__init__()
 
-  def create(self, pipeline: dai.Pipeline, inImg: dai.node.ImageManip, lastHandler = None):
-    if lastHandler != None and lastHandler.nnType == self.nnType:
-      self.network = lastHandler.network
-    else:
-      if self.nnType == NNType.Yolo:
-        self.network = pipeline.createYoloDetectionNetwork()
-      elif self.nnType == NNType.YoloSpatial:
-        self.network = pipeline.createYoloSpatialDetectionNetwork()
-      elif self.nnType == NNType.MobileNet:
-        self.network = pipeline.createMobileNetDetectionNetwork()
-      elif self.nnType == NNType.MobileNetSpatial:
-        self.network = pipeline.createMobileNetSpatialDetectionNetwork()
+  def nnThread(self):
+    qNN = self.device.getOutputQueue("nn")
+    while self._running:
+      try:
+        self.detections = qNN.get().detections
+      except RuntimeError as ex:
+        continue
 
-    self.network.setConfidenceThreshold(0.5)
-    self.network.setNumClasses(80)
-    self.network.setCoordinateSize(4)
-    self.network.setAnchors([10, 14, 23, 27, 37, 58, 81, 82, 135, 169, 344, 319])
-    self.network.setAnchorMasks({"side26": [1, 2, 3], "side13": [3, 4, 5]})
-    self.network.setIouThreshold(0.5)
-    self.network.setBlobPath(self.blobpath)
-    self.network.setNumInferenceThreads(2)
-    self.network.input.setBlocking(False)
+  def createNodes(self, pipeline: dai.Pipeline, camRgb: dai.node.ColorCamera, sync: bool = True) -> None:
+    nn = pipeline.createYoloDetectionNetwork()
 
-    inImg.out.link(self.network.input)
-    inImg.initialConfig.setResize(self.inputSize[0], self.inputSize[1])
-    if self.interleaved:
-      inImg.initialConfig.setFrameType(dai.RawImgFrame.Type.BGR888i)
-    else:
-      inImg.initialConfig.setFrameType(dai.RawImgFrame.Type.BGR888p)
+    nn.setConfidenceThreshold(0.5)
+    nn.setNumClasses(80)
+    nn.setCoordinateSize(4)
+    nn.setAnchors([10, 14, 23, 27, 37, 58, 81, 82, 135, 169, 344, 319])
+    nn.setAnchorMasks({"side26": [1, 2, 3], "side13": [3, 4, 5]})
+    nn.setIouThreshold(0.5)
+    nn.setBlobPath(blobconverter.from_zoo(name="yolo-v4-tiny-tf", shaves=6))
+    nn.setNumInferenceThreads(2)
+    nn.input.setBlocking(False)
 
-    return self.network
+    nnOut = pipeline.create(dai.node.XLinkOut)
+    nnOut.setStreamName("nn")
+    nn.out.link(nnOut.input)
 
-  def draw(self, detections, frame: cv2.Mat):
+    inImage = pipeline.createImageManip()
+    camRgb.preview.link(inImage.inputImage)
+    inImage.out.link(nn.input)
+    inImage.initialConfig.setResize(416, 416)
+    inImage.initialConfig.setFrameType(dai.RawImgFrame.Type.BGR888p)
+
+  def draw(self, frame: cv2.Mat):
     color = (255, 0, 0)
-    for detection in detections:
+    for detection in self.detections:
       bbox = frameNorm(frame, (detection.xmin, detection.ymin, detection.xmax, detection.ymax))
       cv2.putText(frame, labelMap[detection.label], (bbox[0] + 10, bbox[1] + 20), cv2.FONT_HERSHEY_TRIPLEX, 0.5, 255)
       cv2.putText(frame, f"{int(detection.confidence * 100)}%", (bbox[0] + 10, bbox[1] + 40), cv2.FONT_HERSHEY_TRIPLEX, 0.5, 255)
       cv2.rectangle(frame, (bbox[0], bbox[1]), (bbox[2], bbox[3]), color, 2)
+
+  def start(self, device: dai.Device):
+    self.device = device
+    self.detections = []
+    self.threads = [
+      threading.Thread(target=self.nnThread),
+    ]
+    for thread in self.threads:
+      thread.start()
