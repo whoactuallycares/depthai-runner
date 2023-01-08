@@ -16,7 +16,8 @@ def getPath(resolution):
 
   return_path = str(path / (name + '.blob'))
   if os.path.exists(return_path):
-      return return_path
+    return return_path
+  print(f"ERROR: Path '{return_path}' not found")
 
 
 def create_xyz(width, height, camera_matrix):
@@ -110,45 +111,49 @@ class PointcloudNetwork():
   def frame(self) -> cv2.Mat:
     raise NotImplementedError()
 
-  def draw(self, frame: cv2.Mat) -> None:
-    if COLOR and self.qRgb.has():
-      cv2.imshow("color", self.qRgb.get().getCvFrame())
-
-    pcl_data = np.array(self.queue.get().getFirstLayerFp16()).reshape(1, 3, self.resolution[1], self.resolution[0])
-    pcl_data = pcl_data.reshape(3, -1).T.astype(np.float64) / 1000.0
-    self.pcl_converter.visualize_pcl(pcl_data, downsample=True)
-
-    pcd = o3d.geometry.PointCloud()
-    pcd.points = o3d.utility.Vector3dVector(pcl_data)
-    pcd.remove_non_finite_points()
-    pcd = pcd.voxel_down_sample(voxel_size=0.03)
-    pcd.rotate(self.R_camera_to_world, center=np.array([0,0,0],dtype=np.float64))
-    self.pcl_data = np.asarray(pcd.points, dtype=np.float64)
-
-    if cv2.waitKey(1) == "q":
-      self.pcl_converter.close_window()
-
-    # pcl_data = np.array(self.queue.get().getFirstLayerFp16()).reshape(1, 3, self.resolution[1], self.resolution[0])
-    # self.pcl_data = pcl_data.reshape(3, -1).T.astype(np.float64) / 1000.0
-    # print(f"From draw {self.pcl_data.shape}")
-    # #print(pcl_data.shape)
-    # self.pcl_converter.visualize_pcl(pcl_data, downsample=True)#downsample_pcl)
-
-  def drawThread(self):
-    pcd = o3d.geometry.PointCloud()
+  def processingThread(self):
     while self._running:
-      print("R")
       pcl_data = np.array(self.queue.get().getFirstLayerFp16()).reshape(1, 3, self.resolution[1], self.resolution[0])
       pcl_data = pcl_data.reshape(3, -1).T.astype(np.float64) / 1000.0
       #self.pcl_converter.visualize_pcl(pcl_data, downsample=True)
 
+      pcd = o3d.geometry.PointCloud()
       pcd.points = o3d.utility.Vector3dVector(pcl_data)
       pcd.remove_non_finite_points()
       pcd = pcd.voxel_down_sample(voxel_size=0.03)
       pcd.rotate(self.R_camera_to_world, center=np.array([0,0,0],dtype=np.float64))
       self.pcl_data = np.asarray(pcd.points, dtype=np.float64)
 
-  def start(self, device: dai.Device, cd):
+  def start(self, device: dai.Device):
+    # calibData = device.readCalibration()
+    # M_right = calibData.getCameraIntrinsics(dai.CameraBoardSocket.RIGHT,
+    #   dai.Size2f(self.resolution[0], self.resolution[1]),
+    # )
+
+    # # Creater xyz data and send it to the device - to the pointcloud generation model (NeuralNetwork node)
+    # xyz = create_xyz(self.resolution[0], self.resolution[1], np.array(M_right).reshape(3,3))
+    # matrix = np.array([xyz], dtype=np.float16).view(np.int8)
+    # buff = dai.Buffer()
+    # buff.setData(matrix)
+    # device.getInputQueue("xyz_in").send(buff)
+
+    # self.pcl_converter = PointCloudVisualizer()
+    # self.queue = device.getOutputQueue("pcl", maxSize=8, blocking=False)
+    # #if COLOR:
+    #   #self.qRgb = device.getOutputQueue("color", maxSize=1, blocking=False)
+
+
+
+
+
+    # # main stream loop
+    # while True:
+    #  self.draw(0)
+
+    print("Opening device")
+    self.pcl_data = np.zeros((3))
+    # device.setLogLevel(dai.LogLevel.ERR)
+
     calibData = device.readCalibration()
     M_right = calibData.getCameraIntrinsics(dai.CameraBoardSocket.RIGHT,
       dai.Size2f(self.resolution[0], self.resolution[1]),
@@ -163,62 +168,44 @@ class PointcloudNetwork():
 
     #self.pcl_converter = PointCloudVisualizer()
     self.queue = device.getOutputQueue("pcl", maxSize=8, blocking=False)
-    #if COLOR:
-      #self.qRgb = device.getOutputQueue("color", maxSize=1, blocking=False)
-
 
     self.threads = [
-      threading.Thread(target=self.drawThread)
+      threading.Thread(target=self.processingThread)
     ]
     for thread in self.threads:
       thread.start()
+    return
+    # while True:
+    #   pcl_data = np.array(self.queue.get().getFirstLayerFp16()).reshape(1, 3, self.resolution[1], self.resolution[0])
+    #   pcl_data = pcl_data.reshape(3, -1).T.astype(np.float64) / 1000.0
+    #   pcd = o3d.geometry.PointCloud()
+    #   pcd.points = o3d.utility.Vector3dVector(pcl_data)
+    #   pcd.remove_non_finite_points()
+    #   pcd = pcd.voxel_down_sample(voxel_size=0.03)
+
+    #   cd.setPointcloud(np.asarray(pcd.points))
+    #   print(f"YTT {pcl_data.shape}")
+    if COLOR:
+      qRgb = device.getOutputQueue("color", maxSize=1, blocking=False)
+    qStereo = device.getOutputQueue("stereo", maxSize=8, blocking=False)
+
+    resolution = self.resolution
 
     # main stream loop
-    #while True:
-    #  self.draw(0)
+    while True:
+      print("Start")
+      if qStereo.has():
+        qStereo.get()
+      if COLOR and qRgb.has():
+        cv2.imshow("color", qRgb.get().getCvFrame())
 
-    # print("Opening device")
-    # self.pcl_data = np.zeros((3))
-    # # device.setLogLevel(dai.LogLevel.ERR)
 
-    # calibData = device.readCalibration()
-    # M_right = calibData.getCameraIntrinsics(dai.CameraBoardSocket.RIGHT,
-    #   dai.Size2f(self.resolution[0], self.resolution[1]),
-    # )
+      print("GotColor")
+      pcl_data = np.array(queue.get().getFirstLayerFp16()).reshape(1, 3, resolution[1], resolution[0])
+      pcl_data = pcl_data.reshape(3, -1).T.astype(np.float64) / 1000.0
+      pcl_converter.visualize_pcl(pcl_data, downsample=True)
+      print("Visualized")
 
-    # # Creater xyz data and send it to the device - to the pointcloud generation model (NeuralNetwork node)
-    # xyz = create_xyz(self.resolution[0], self.resolution[1], np.array(M_right).reshape(3,3))
-    # matrix = np.array([xyz], dtype=np.float16).view(np.int8)
-    # buff = dai.Buffer()
-    # buff.setData(matrix)
-    # device.getInputQueue("xyz_in").send(buff)
-
-    # pcl_converter = PointCloudVisualizer()
-    # queue = device.getOutputQueue("pcl", maxSize=8, blocking=False)
-    # # while True:
-    # #   pcl_data = np.array(self.queue.get().getFirstLayerFp16()).reshape(1, 3, self.resolution[1], self.resolution[0])
-    # #   pcl_data = pcl_data.reshape(3, -1).T.astype(np.float64) / 1000.0
-    # #   pcd = o3d.geometry.PointCloud()
-    # #   pcd.points = o3d.utility.Vector3dVector(pcl_data)
-    # #   pcd.remove_non_finite_points()
-    # #   pcd = pcd.voxel_down_sample(voxel_size=0.03)
-
-    # #   cd.setPointcloud(np.asarray(pcd.points))
-    # #   print(f"YTT {pcl_data.shape}")
-    # if COLOR:
-    #   qRgb = device.getOutputQueue("color", maxSize=1, blocking=False)
-
-    # resolution = self.resolution
-
-    # # main stream loop
-    # while True:
-    #   if COLOR and qRgb.has():
-    #       cv2.imshow("color", qRgb.get().getCvFrame())
-
-    #   pcl_data = np.array(queue.get().getFirstLayerFp16()).reshape(1, 3, resolution[1], resolution[0])
-    #   pcl_data = pcl_data.reshape(3, -1).T.astype(np.float64) / 1000.0
-    #   pcl_converter.visualize_pcl(pcl_data, downsample=True)
-
-    #   if cv2.waitKey(1) == "q":
-    #     #pcl_converter.close_window()
-    #     break
+      if cv2.waitKey(1) == "q":
+        pcl_converter.close_window()
+        break

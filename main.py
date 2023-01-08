@@ -15,8 +15,10 @@ import cv2
 
 ENABLE_CV2 = False
 ENABLE_FOXGLOVE = True
-ENABLE_IMU = True
+ENABLE_IMU = False
 ENABLE_POINTCLOUD = True
+ENABLE_LR = False
+ENABLE_SYNC = False
 
 allNetworks = [
   HumanPoseNetwork(),
@@ -30,8 +32,8 @@ networkMap = {
   "gaze" : GazeEstimationNetwork(),
 }
 
-activeNetwork = YoloNetwork()
-pointcloud = PointcloudNetwork()
+activeNetwork = HumanPoseNetwork()
+pointcloud = PointcloudNetwork(ENABLE_CV2)
 
 def configureDepthPostProcessing(stereoDepthNode: dai.node.StereoDepth, lrcheck: bool = True, extended: bool = False, subpixel: bool = True) -> None:
   """
@@ -73,25 +75,26 @@ def createPipeline():
   colorOut.setStreamName("color")
   camRgb.isp.link(colorOut.input)
 
-
   # Configure Camera Properties
   left = pipeline.createMonoCamera()
   left.setBoardSocket(dai.CameraBoardSocket.LEFT)
   left.setResolution(dai.MonoCameraProperties.SensorResolution.THE_400_P)
 
   # left camera output
-  leftOut = pipeline.createXLinkOut()
-  leftOut.setStreamName("left")
-  left.out.link(leftOut.input)
+  if ENABLE_LR:
+    leftOut = pipeline.createXLinkOut()
+    leftOut.setStreamName("left")
+    left.out.link(leftOut.input)
 
   right = pipeline.createMonoCamera()
   right.setBoardSocket(dai.CameraBoardSocket.RIGHT)
   right.setResolution(dai.MonoCameraProperties.SensorResolution.THE_400_P)
 
   # right camera output
-  rightOut = pipeline.createXLinkOut()
-  rightOut.setStreamName("right")
-  right.out.link(rightOut.input)
+  if ENABLE_LR:
+    rightOut = pipeline.createXLinkOut()
+    rightOut.setStreamName("right")
+    right.out.link(rightOut.input)
 
   stereo = pipeline.createStereoDepth()
   configureDepthPostProcessing(stereo)
@@ -116,7 +119,7 @@ def createPipeline():
     xlinkOut.setStreamName("imu")
     imu.out.link(xlinkOut.input)
 
-  activeNetwork.createNodes(pipeline, camRgb, stereo=stereo, sync=False)
+  activeNetwork.createNodes(pipeline, camRgb, stereo=stereo, sync=ENABLE_SYNC)
 
   if ENABLE_POINTCLOUD:
     pointcloud.createNodes(pipeline, camRgb, stereo=stereo, sync=False)
@@ -156,45 +159,107 @@ async def messageHandler(websocket, path):
 
 async def startServer():
   server = await websockets.serve(messageHandler, "localhost", 8766)
-  await server.wait_closed()
+  while not shouldStop.is_set():
+    time.sleep(0.5)
+
+def map_uint16_to_uint8(img, lower_bound=None, upper_bound=None):
+  '''
+  Map a 16-bit image trough a lookup table to convert it to 8-bit.
+
+  Parameters
+  ----------
+  img: numpy.ndarray[np.uint16]
+      image that should be mapped
+  lower_bound: int, optional
+      lower bound of the range that should be mapped to ``[0, 255]``,
+      value must be in the range ``[0, 65535]`` and smaller than `upper_bound`
+      (defaults to ``numpy.min(img)``)
+  upper_bound: int, optional
+      upper bound of the range that should be mapped to ``[0, 255]``,
+      value must be in the range ``[0, 65535]`` and larger than `lower_bound`
+      (defaults to ``numpy.max(img)``)
+
+  Returns
+  -------
+  numpy.ndarray[uint8]
+  '''
+  if not(0 <= lower_bound < 2**16) and lower_bound is not None:
+    raise ValueError(
+      '"lower_bound" must be in the range [0, 65535]')
+  if not(0 <= upper_bound < 2**16) and upper_bound is not None:
+    raise ValueError(
+      '"upper_bound" must be in the range [0, 65535]')
+  if lower_bound is None:
+    lower_bound = np.min(img)
+  if upper_bound is None:
+    upper_bound = np.max(img)
+  if lower_bound >= upper_bound:
+    raise ValueError(
+      '"lower_bound" must be smaller than "upper_bound"')
+  lut = np.concatenate([
+    np.zeros(lower_bound, dtype=np.uint16),
+    np.linspace(0, 255, upper_bound - lower_bound).astype(np.uint16),
+    np.ones(2**16 - upper_bound, dtype=np.uint16) * 255
+  ])
+  return lut[img].astype(np.uint8)
 
 def main(cameraData: CameraData) -> None:
   global activeNetwork
   while not shouldStop.is_set(): # To allow for pipeline recreation
     with dai.Device(createPipeline()) as device:
       device.setIrLaserDotProjectorBrightness(800)
-      pointcloud.start(device, cameraData)
+      if ENABLE_POINTCLOUD:
+        pointcloud.start(device)
+
       activeNetwork.start(device)
       qColor = device.getOutputQueue("color", maxSize=1, blocking=False)
-      qLeft = device.getOutputQueue("left", maxSize=1, blocking=False)
-      qRight = device.getOutputQueue("right", maxSize=1, blocking=False)
+      if ENABLE_LR:
+        qLeft = device.getOutputQueue("left", maxSize=1, blocking=False)
+        qRight = device.getOutputQueue("right", maxSize=1, blocking=False)
       qStereo = device.getOutputQueue("stereo", maxSize=1, blocking=False)
       if ENABLE_IMU:
         qIMU = device.getOutputQueue("imu", maxSize=1, blocking=False)
 
+      colorFrame = None
+      hasColor = False
+
       while not shouldStop.is_set() or shouldRestart.is_set():
-        cameraData.setPointcloud(pointcloud.pcl_data)
+        if ENABLE_POINTCLOUD:
+          cameraData.setPointcloud(pointcloud.pcl_data)
         if qColor.has():
           colorFrame = qColor.get().getCvFrame()
-          #activeNetwork.draw(colorFrame)
           cameraData.setColorFrame(colorFrame)
+          hasColor = True
+          #activeNetwork.draw(colorFrame)
           if ENABLE_CV2:
             cv2.imshow("color", colorFrame)
-        # #if activeNetwork.has():
-        # #  cv2.imshow("nn", activeNetwork.frame())
-        if qLeft.has():
-          leftFrame = qLeft.get().getCvFrame()
-          cameraData.setLeftFrame(leftFrame)
+        if hasColor:
+          w = colorFrame.shape[1]
+          h = colorFrame.shape[0]
+          nnFrame = colorFrame[0: h, (w-h)//2: w-(w-h)//2, 0:3]
+          activeNetwork.draw(nnFrame)
+          #cameraData.setNnFrame(nnFrame)
           if ENABLE_CV2:
-            cv2.imshow("left", leftFrame)
-        if qRight.has():
-          rightFrame = qRight.get().getCvFrame()
-          cameraData.setRightFrame(rightFrame)
-          if ENABLE_CV2:
-            cv2.imshow("right", rightFrame)
+            cv2.imshow("nn", nnFrame)
+        if ENABLE_LR:
+          if qLeft.has():
+           leftFrame = qLeft.get().getCvFrame()
+           cameraData.setLeftFrame(leftFrame)
+           if ENABLE_CV2:
+             cv2.imshow("left", leftFrame)
+          if qRight.has():
+           rightFrame = qRight.get().getCvFrame()
+           cameraData.setRightFrame(rightFrame)
+           if ENABLE_CV2:
+             cv2.imshow("right", rightFrame)
         if qStereo.has():
-          stereoFrame = qStereo.get().getCvFrame()
-          cameraData.setStereoFrame(stereoFrame)
+          stereoFrame = qStereo.get().getCvFrame() * 10
+          print(stereoFrame.shape)
+          print(stereoFrame.dtype)
+          in8bit = map_uint16_to_uint8(stereoFrame, 0, 2**16 - 1)
+
+          cameraData.setStereoFrame(cv2.applyColorMap(in8bit, cv2.COLORMAP_JET))
+          cv2.imshow("stereo", cv2.applyColorMap(in8bit, cv2.COLORMAP_JET))
           if ENABLE_CV2:
             cv2.imshow("stereo", stereoFrame)
         if ENABLE_IMU and qIMU.has():
@@ -213,6 +278,8 @@ def main(cameraData: CameraData) -> None:
               }
             }
             cameraData.setIMU(imuData)
+
+
         global irValue, irValueLast, selecteNN, selectedNNLast
         if irValue != irValueLast:
           print(f"Setting IR value to {irValue*2}")

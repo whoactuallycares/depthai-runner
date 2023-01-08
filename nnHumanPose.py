@@ -38,7 +38,6 @@ class HumanPoseNetwork(Network):
     while self._running:
       try:
         raw_in = in_queue.get()
-        print(f"SeqNR {raw_in.getSequenceNum()}")
         self._has = True
       except RuntimeError:
         return

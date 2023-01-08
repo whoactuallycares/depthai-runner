@@ -141,7 +141,7 @@ class FoxgloveUploader():
           await server.send_message(channels[videoStream], time.time_ns(), raw_image.SerializeToString())
         if camData.getIMU() != {}:
           await server.send_message(IMUChan, time.time_ns(), json.dumps(camData.getIMU()).encode("utf8"))
-        
+
         pointcloud = PointCloud()
         pointcloud.timestamp.FromNanoseconds(time.time_ns())
         pointcloud.frame_id = "test"
