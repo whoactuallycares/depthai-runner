@@ -33,7 +33,7 @@ networkMap = {
 }
 
 activeNetwork = HumanPoseNetwork()
-pointcloud = PointcloudNetwork(ENABLE_CV2)
+pointcloud = PointcloudNetwork()
 
 def configureDepthPostProcessing(stereoDepthNode: dai.node.StereoDepth, lrcheck: bool = True, extended: bool = False, subpixel: bool = True) -> None:
   """
