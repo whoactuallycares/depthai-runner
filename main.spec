@@ -1,20 +1,18 @@
 # -*- mode: python ; coding: utf-8 -*-
-from PyInstaller.utils.hooks import collect_submodules
 
-import sys ; sys.setrecursionlimit(sys.getrecursionlimit() * 5)
+import sys ; sys.setrecursionlimit(sys.getrecursionlimit() * 2)
 
 block_cipher = None
 
 
 a = Analysis(
     ['main.py'],
-    pathex=["/home/tommy/.local/lib/python3.10/site-packages/cv2/qt/plugins/platforms/../../../../opencv_contrib_python.libs"],
+    pathex=[],
     binaries=[],
-    datas=[("models/out/*", "models/out")],
-    hiddenimports=[
-        "sklearn.metrics._pairwise_distances_reduction._datasets_pair",
-        "sklearn.metrics._pairwise_distances_reduction._middle_term_computer"
-    ],
+    datas=[],
+    hiddenimports=["sklearn.metrics._pairwise_distances_reduction._datasets_pair",
+    "sklearn.metrics._pairwise_distances_reduction._middle_term_computer",
+    "google", "google.protobuf", "google.protobuf.internal.builder", "google.protobuf.internal"],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
