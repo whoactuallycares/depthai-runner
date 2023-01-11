@@ -47,6 +47,7 @@ class FoxgloveUploader():
     self.name = name
     self.address = address
     self.port = port
+    self.channels = []
 
   class Listener(FoxgloveServerListener):
     def on_subscribe(self, server: FoxgloveServer, channel_id: ChannelId):
@@ -55,106 +56,126 @@ class FoxgloveUploader():
     def on_unsubscribe(self, server: FoxgloveServer, channel_id: ChannelId):
       logging.debug("Last client unsubscribed from", channel_id)
 
-  async def _run(self, camData: CameraData):
-    async with FoxgloveServer(self.address, self.port, self.name) as server:
-      server.set_listener(self.Listener())
-      videoStreams = ["color", "nn", "left", "right", "stereo"]
-      channels = {}
+  async def add_video_channel(self, name: str):
+    self.channels += [{"id": await self.server.add_channel(
+      {
+        "topic": f"vid_{name}",
+        "encoding": "protobuf",
+        "schemaName": CompressedImage.DESCRIPTOR.full_name,
+        "schema": b64encode(
+          build_file_descriptor_set(CompressedImage).SerializeToString()
+        ).decode("ascii"),
+      }
+    ), "name": name}]
+    print(f"Adding video channel {name}")
 
-      for videoStream in videoStreams:
-        channels[videoStream] = await server.add_channel(
+  async def add_imu_channel(self):
+    self.channels += [{"id": await self.server.add_channel(
+      {
+        "topic": "imu",
+        "encoding": "json",
+        "schemaName": "com.luxonis.imu",
+        "schema": json.dumps(
           {
-            "topic": f"vid_{videoStream}",
-            "encoding": "protobuf",
-            "schemaName": CompressedImage.DESCRIPTOR.full_name,
-            "schema": b64encode(
-              build_file_descriptor_set(CompressedImage).SerializeToString()
-            ).decode("ascii"),
-          }
-        )
-
-      IMUChan = await server.add_channel(
-        {
-          "topic": "imu",
-          "encoding": "json",
-          "schemaName": "com.luxonis.imu",
-          "schema": json.dumps(
-            {
-              "type": "object",
-              "properties": {
-                "timestamp": {"type": "integer"},
-                "gyroscope": {
-                  "type": "object",
-                  "properties": {
-                    "x": {"type": "number"},
-                    "y": {"type": "number"},
-                    "z": {"type": "number"},
-                  },
+            "type": "object",
+            "properties": {
+              "timestamp": {"type": "integer"},
+              "gyroscope": {
+                "type": "object",
+                "properties": {
+                  "x": {"type": "number"},
+                  "y": {"type": "number"},
+                  "z": {"type": "number"},
                 },
-                "accelerometer": {
-                  "type": "object",
-                  "properties": {
-                    "x": {"type": "number"},
-                    "y": {"type": "number"},
-                    "z": {"type": "number"},
-                  },
+              },
+              "accelerometer": {
+                "type": "object",
+                "properties": {
+                  "x": {"type": "number"},
+                  "y": {"type": "number"},
+                  "z": {"type": "number"},
                 },
               },
             },
-          ),
-        }
-      )
+          },
+        ),
+      }
+    ), "name": "imu"}]
 
-      pointCloudChan = await server.add_channel(
-        {
-          "topic": "pointcloud",
-          "encoding": "protobuf",
-          "schemaName": PointCloud.DESCRIPTOR.full_name,
-          "schema": b64encode(
-            build_file_descriptor_set(PointCloud).SerializeToString()
-          ).decode("ascii"),
-        }
-      )
+  async def add_pointcloud_channel(self):
+    self.channels += [{"id": await self.server.add_channel(
+      {
+        "topic": "pointcloud",
+        "encoding": "protobuf",
+        "schemaName": PointCloud.DESCRIPTOR.full_name,
+        "schema": b64encode(
+          build_file_descriptor_set(PointCloud).SerializeToString()
+        ).decode("ascii"),
+      }
+    ), "name": "pointcloud"}]
+
+  async def remove_channel(self, name: str):
+    channel = next(filter(lambda chan: chan["name"] == name, self.channels))
+    await self.server.remove_channel(channel["id"])
+
+  async def send_pointcloud(self, camData, channel):
+    pcData = camData.getPointcloud()
+    if pcData is None:
+      return
+    pointcloud = PointCloud()
+    pointcloud.timestamp.FromNanoseconds(time.time_ns())
+    pointcloud.frame_id = "test"
+    pointcloud.data = pcData.tobytes()
+    pointcloud.point_stride = 4 * 7
+    pointcloud.fields.append(PackedElementField(name="x", offset=0, type=7)) # FLOAT32
+    pointcloud.fields.append(PackedElementField(name="y", offset=4, type=7)) # FLOAT32
+    pointcloud.fields.append(PackedElementField(name="z", offset=8, type=7)) # FLOAT32
+    pointcloud.fields.append(PackedElementField(name="red", offset=12, type=7)) # FLOAT32
+    pointcloud.fields.append(PackedElementField(name="green", offset=16, type=7)) # FLOAT32
+    pointcloud.fields.append(PackedElementField(name="blue", offset=20, type=7)) # FLOAT32
+    pointcloud.fields.append(PackedElementField(name="alpha", offset=24, type=7)) # FLOAT32
+    await self.server.send_message(channel["id"], time.time_ns(), pointcloud.SerializeToString())
+
+  async def _run(self, camData: CameraData):
+    async with FoxgloveServer(self.address, self.port, self.name) as server:
+      self.server = server
+      server.set_listener(self.Listener())
+      await self.add_video_channel("color")
+      await self.add_video_channel("nn")
+      await self.add_video_channel("stereo")
+      await self.add_imu_channel()
+      await self.add_pointcloud_channel()
 
       while True:
         await asyncio.sleep(1 / 60)
 
-        for videoStream in videoStreams:
-          raw_image = CompressedImage()
-          raw_image.frame_id = f"vid_{videoStream}"
-          raw_image.format = "jpeg"
+        for channel in self.channels:
+          if channel["name"] == "pointcloud":
+            await self.send_pointcloud(camData, channel)
+          elif channel["name"] == "imu":
+            if camData.getIMU() != {}:
+              await server.send_message(channel["id"], time.time_ns(), json.dumps(camData.getIMU()).encode("utf8"))
+          else:
+            raw_image = CompressedImage()
+            raw_image.frame_id = f"vid_{channel['name']}"
+            raw_image.format = "jpeg"
 
-          if videoStream == "color":
-            frame = camData.getColorFrame()
-          elif videoStream == "nn":
-            frame = camData.getNnFrame()
-          elif videoStream == "left":
-            frame = camData.getLeftFrame()
-          elif videoStream == "right":
-            frame = camData.getRightFrame()
-          elif videoStream == "stereo":
-            frame = camData.getStereoFrame()
+            if channel["name"] == "color":
+              frame = camData.getColorFrame()
+            elif channel["name"] == "nn":
+              frame = camData.getNnFrame()
+            elif channel["name"] == "left":
+              frame = camData.getLeftFrame()
+            elif channel["name"] == "right":
+              frame = camData.getRightFrame()
+            elif channel["name"] == "stereo":
+              frame = camData.getStereoFrame()
 
-          raw_image.data = bytes(frame)
-          raw_image.timestamp.FromNanoseconds(time.time_ns())
+            raw_image.data = bytes(frame)
+            raw_image.timestamp.FromNanoseconds(time.time_ns())
 
-          await server.send_message(channels[videoStream], time.time_ns(), raw_image.SerializeToString())
-        if camData.getIMU() != {}:
-          await server.send_message(IMUChan, time.time_ns(), json.dumps(camData.getIMU()).encode("utf8"))
+            await server.send_message(channel["id"], time.time_ns(), raw_image.SerializeToString())
 
-        pointcloud = PointCloud()
-        pointcloud.timestamp.FromNanoseconds(time.time_ns())
-        pointcloud.frame_id = "test"
-        element = PackedElementField()
-        element.name = "pos"
-        element.offset = 0
-        #pointcloud.data = struct.pack("III", 0, 0, 0)
-        pointcloud.data = camData.getPointcloud().tobytes()
-        pointcloud.point_stride = 8 * 3
-        pointcloud.fields.append(PackedElementField(name="x", offset=0, type=8))
-        pointcloud.fields.append(PackedElementField(name="y", offset=8, type=8))
-        pointcloud.fields.append(PackedElementField(name="z", offset=16, type=8))
-        await server.send_message(pointCloudChan, time.time_ns(), pointcloud.SerializeToString())
 
   def run(self, camData: CameraData):
     run_cancellable(self._run(camData))

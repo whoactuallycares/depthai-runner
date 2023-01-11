@@ -29,6 +29,7 @@ def frameNorm(frame, bbox):
 class YoloNetwork(Network):
   def __init__(self):
     super().__init__()
+    self.detections = []
 
   def nnThread(self):
     qNN = self.device.getOutputQueue("nn")
@@ -71,7 +72,6 @@ class YoloNetwork(Network):
 
   def start(self, device: dai.Device):
     self.device = device
-    self.detections = []
     self.queue = device.getOutputQueue("nn", maxSize=1, blocking=False)
     self.threads = [
       threading.Thread(target=self.nnThread),

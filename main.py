@@ -1,8 +1,8 @@
 from nnGazeEstimation import GazeEstimationNetwork
-from nnPointcloud import PointcloudNetwork
 from foxgloveComms import FoxgloveUploader
 from nnHumanPose import HumanPoseNetwork
 from cameraData import CameraData
+from nnRgbd import RGBDNetwork
 from nnYolo import YoloNetwork
 import depthai as dai
 import numpy as np
@@ -15,7 +15,7 @@ import cv2
 
 ENABLE_CV2 = False
 ENABLE_FOXGLOVE = True
-ENABLE_IMU = False
+ENABLE_IMU = True
 ENABLE_POINTCLOUD = True
 ENABLE_LR = False
 ENABLE_SYNC = False
@@ -33,7 +33,7 @@ networkMap = {
 }
 
 activeNetwork = HumanPoseNetwork()
-pointcloud = PointcloudNetwork()
+pointcloud = RGBDNetwork()
 
 def configureDepthPostProcessing(stereoDepthNode: dai.node.StereoDepth, lrcheck: bool = True, extended: bool = False, subpixel: bool = True) -> None:
   """
@@ -68,6 +68,7 @@ def createPipeline():
 
   camRgb = pipeline.createColorCamera()
   camRgb.setIspScale(1, 3)
+  camRgb.setColorOrder(dai.ColorCameraProperties.ColorOrder.RGB)
   #camRgb.setFps(40)
   #camRgb.setResolution(dai.ColorCameraProperties.SensorResolution.THE_1080_P)
 
@@ -97,9 +98,14 @@ def createPipeline():
     right.out.link(rightOut.input)
 
   stereo = pipeline.createStereoDepth()
-  configureDepthPostProcessing(stereo)
+  stereo.setDepthAlign(dai.CameraBoardSocket.RGB)
+  #if ENABLE_POINTCLOUD:
+  #  configureDepthPostProcessing(stereo)
   #stereo.initialConfig.setMedianFilter(dai.MedianFilter.KERNEL_7x7)
   #stereo.setLeftRightCheck(True)
+
+
+  #camRgb.initialControl.setManualFocus(130)
 
   left.out.link(stereo.left)
   right.out.link(stereo.right)
@@ -124,43 +130,39 @@ def createPipeline():
   if ENABLE_POINTCLOUD:
     pointcloud.createNodes(pipeline, camRgb, stereo=stereo, sync=False)
 
+
   return pipeline
 
 irValue = 0
 irValueLast = 0
-selectedNN = 0
-selectedNNLast = 0
 
 async def messageHandler(websocket, path):
-  global activeNetwork
+  global activeNetwork, shouldRestart, irValue, ENABLE_IMU, ENABLE_SYNC, ENABLE_LR, ENABLE_POINTCLOUD
   async for message in websocket:
     try:
       print(f"Got json command {message}")
-      if message[:6] == "option":
-        print("selecting option")
-        global selectedNN
-        selectedNN = int(message[-1]) - 1
-      if message[:6] == "Slider":
-        global irValue
-        irValue = int(message[8:])
-        print(f"IR value now {irValue}")
-      command = json.dumps(message)
-
-
-      if command["command"] == None:
-        continue
-      elif command["command"] == "set-nn":
-        activeNetwork = networkMap[command["args"]]
-      elif command["command"] == "set-ir":
-        irValue = int(command["args"])
-
+      command = json.loads(message)
+      if command["cmd"] == "setIRBrightness":
+        irValue = int(command["value"])
+      elif command["cmd"] == "setActiveNN":
+        activeNetwork = networkMap[command["value"]]
+      elif command["cmd"] == "enableIMU":
+        ENABLE_IMU = bool(command["value"])
+      elif command["cmd"] == "enableSync":
+        ENABLE_SYNC = bool(command["value"])
+      elif command["cmd"] == "enablePointcloud":
+        ENABLE_POINTCLOUD = bool(command["value"])
+      elif command["cmd"] == "enableLR":
+        ENABLE_LR = bool(command["value"])
+      elif command["cmd"] == "restart":
+        shouldRestart.set()
     except:
       print(f"Received invalid json: {message}")
 
 async def startServer():
-  server = await websockets.serve(messageHandler, "localhost", 8766)
-  while not shouldStop.is_set():
-    time.sleep(0.5)
+  async with websockets.serve(messageHandler, "localhost", 8766):
+    while not shouldStop.is_set():
+      await asyncio.sleep(0.1)
 
 def map_uint16_to_uint8(img, lower_bound=None, upper_bound=None):
   '''
@@ -207,25 +209,26 @@ def main(cameraData: CameraData) -> None:
   global activeNetwork
   while not shouldStop.is_set(): # To allow for pipeline recreation
     with dai.Device(createPipeline()) as device:
-      device.setIrLaserDotProjectorBrightness(800)
+      device.setIrLaserDotProjectorBrightness(1200)
       if ENABLE_POINTCLOUD:
         pointcloud.start(device)
 
       activeNetwork.start(device)
       qColor = device.getOutputQueue("color", maxSize=1, blocking=False)
+      qStereo = device.getOutputQueue("stereo", maxSize=1, blocking=False)
       if ENABLE_LR:
         qLeft = device.getOutputQueue("left", maxSize=1, blocking=False)
         qRight = device.getOutputQueue("right", maxSize=1, blocking=False)
-      qStereo = device.getOutputQueue("stereo", maxSize=1, blocking=False)
       if ENABLE_IMU:
         qIMU = device.getOutputQueue("imu", maxSize=1, blocking=False)
 
       colorFrame = None
       hasColor = False
 
-      while not shouldStop.is_set() or shouldRestart.is_set():
+      while not shouldStop.is_set() and not shouldRestart.is_set():
         if ENABLE_POINTCLOUD:
-          cameraData.setPointcloud(pointcloud.pcl_data)
+          cameraData.setPointcloud(pointcloud.pc_data)
+          pass
         if qColor.has():
           colorFrame = qColor.get().getCvFrame()
           cameraData.setColorFrame(colorFrame)
@@ -238,7 +241,7 @@ def main(cameraData: CameraData) -> None:
           h = colorFrame.shape[0]
           nnFrame = colorFrame[0: h, (w-h)//2: w-(w-h)//2, 0:3]
           activeNetwork.draw(nnFrame)
-          #cameraData.setNnFrame(nnFrame)
+          cameraData.setNnFrame(nnFrame)
           if ENABLE_CV2:
             cv2.imshow("nn", nnFrame)
         if ENABLE_LR:
@@ -254,14 +257,12 @@ def main(cameraData: CameraData) -> None:
              cv2.imshow("right", rightFrame)
         if qStereo.has():
           stereoFrame = qStereo.get().getCvFrame() * 10
-          print(stereoFrame.shape)
-          print(stereoFrame.dtype)
           in8bit = map_uint16_to_uint8(stereoFrame, 0, 2**16 - 1)
-
-          cameraData.setStereoFrame(cv2.applyColorMap(in8bit, cv2.COLORMAP_JET))
-          cv2.imshow("stereo", cv2.applyColorMap(in8bit, cv2.COLORMAP_JET))
+          lut = np.arange(256, dtype=np.uint8)[::-1]
+          pretty8bit = cv2.applyColorMap(cv2.LUT(in8bit, lut), cv2.COLORMAP_JET)
+          cameraData.setStereoFrame(pretty8bit)
           if ENABLE_CV2:
-            cv2.imshow("stereo", stereoFrame)
+            cv2.imshow("stereo", pretty8bit)
         if ENABLE_IMU and qIMU.has():
           for packet in qIMU.get().packets:
             imuData = {
@@ -278,7 +279,6 @@ def main(cameraData: CameraData) -> None:
               }
             }
             cameraData.setIMU(imuData)
-
 
         global irValue, irValueLast, selecteNN, selectedNNLast
         if irValue != irValueLast:
@@ -309,6 +309,12 @@ if __name__ == "__main__":
   if ENABLE_FOXGLOVE:
     fgUp = FoxgloveUploader()
     fgUp.run(cd)
+    time.sleep(1)
+    #fgUp.add_video_channel("color")
+    #fgUp.add_video_channel("stereo")
+    #fgUp.add_video_channel("nn")
+    #fgUp.add_imu_channel()
+    #fgUp.add_pointcloud_channel()
   else:
     while True:
       try:
