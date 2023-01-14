@@ -38,7 +38,7 @@ def build_file_descriptor_set(
 
 class FoxgloveRunner():
   def __init__(self, cameraData: CameraData):
-    self.shouldStop_ = threading.Event()
+    self.shouldStop_ = asyncio.Event()
     self.cameraData_ = cameraData
     self.channels_ = []
     pass
@@ -50,76 +50,12 @@ class FoxgloveRunner():
     def on_unsubscribe(self, server: FoxgloveServer, channel_id: ChannelId):
       logging.debug("Client unsubscribed from", channel_id)
 
-  # async def add_video_channel(self, name: str):
-  #   self.channels_ += [{"id": await self.server.add_channel(
-  #     {
-  #       "topic": f"vid_{name}",
-  #       "encoding": "protobuf",
-  #       "schemaName": CompressedImage.DESCRIPTOR.full_name,
-  #       "schema": b64encode(
-  #         build_file_descriptor_set(CompressedImage).SerializeToString()
-  #       ).decode("ascii"),
-  #     }
-  #   ), "name": name}]
-  #   print(f"Adding video channel {name}")
-
   def add_channel(self, name: str):
     self.channels_ += [{"id": None, "name": name}]
 
-
-  # async def add_imu_channel(self):
-  #   self.channels_ += [{"id": await self.server.add_channel(
-  #     {
-  #       "topic": "imu",
-  #       "encoding": "json",
-  #       "schemaName": "com.luxonis.imu",
-  #       "schema": json.dumps(
-  #         {
-  #           "type": "object",
-  #           "properties": {
-  #             "timestamp": {"type": "integer"},
-  #             "gyroscope": {
-  #               "type": "object",
-  #               "properties": {
-  #                 "x": {"type": "number"},
-  #                 "y": {"type": "number"},
-  #                 "z": {"type": "number"},
-  #               },
-  #             },
-  #             "accelerometer": {
-  #               "type": "object",
-  #               "properties": {
-  #                 "x": {"type": "number"},
-  #                 "y": {"type": "number"},
-  #                 "z": {"type": "number"},
-  #               },
-  #             },
-  #           },
-  #         },
-  #       ),
-  #     }
-  #   ), "name": "imu"}]
-
-  # async def add_pointcloud_channel(self):
-  #   self.channels_ += [{"id": await self.server.add_channel(
-  #     {
-  #       "topic": "pointcloud",
-  #       "encoding": "protobuf",
-  #       "schemaName": PointCloud.DESCRIPTOR.full_name,
-  #       "schema": b64encode(
-  #         build_file_descriptor_set(PointCloud).SerializeToString()
-  #       ).decode("ascii"),
-  #     }
-  #   ), "name": "pointcloud"}]
-
-  # async def remove_channel(self, name: str):
-  #   channel = next(filter(lambda chan: chan["name"] == name, self.channels_))
-  #   await self.server.remove_channel(channel["id"])
-
   def remove_channel(self, name: str):
     channel = next(filter(lambda chan: chan["name"] == name, self.channels_))
-    self.channels_.remove(channel)
-    #await self.server.remove_channel(channel["id"])
+    channel["name"] = None # Clear name to signal that it's supposed to be removed by the main thread
 
   async def send_pointcloud(self, camData, channel):
     pcData = camData.getPointcloud()
@@ -200,8 +136,10 @@ class FoxgloveRunner():
         for channel in self.channels_:
           if channel["id"] == None:
             channel["id"] = await server.add_channel(self._channel_description(channel["name"]))
-          if channel["name"] == None:
+          elif channel["name"] == None:
             await server.remove_channel(channel["id"])
+            self.channels_.remove(channel)
+            continue
           elif channel["name"] == "pointcloud":
             await self.send_pointcloud(self.cameraData_, channel)
           elif channel["name"] == "imu":
