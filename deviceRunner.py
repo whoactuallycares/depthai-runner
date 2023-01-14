@@ -7,7 +7,6 @@ from nnYolo import YoloNetwork
 import depthai as dai
 import numpy as np
 import threading
-import logging
 import cv2
 
 def map_uint16_to_uint8(img, lower_bound=None, upper_bound=None):
@@ -73,6 +72,7 @@ class DeviceRunner():
     self.cmdLock_ = threading.Lock()
     self.commands_ = []
     self.irValue_ = 1000
+    self.oldIrValue_ = 1000
     self.device_ = None
     self.networks_ = {
       "pose" : HumanPoseNetwork(),
@@ -87,16 +87,8 @@ class DeviceRunner():
   def stop(self):
     self.shouldStop_.set()
 
-  @property
-  def irValue(self):
-    return self.irValue_
-
-  @irValue.setter
-  def irValue(self, value: int):
+  def setIR(self, value: int):
     self.irValue_ = value
-    if self.device_ is not None:
-      logging.info(f"IR Dot projection brightness set to {value}")
-      self.device_.setIrLaserDotProjectorBrightness(value)
 
   def enableCV2(self, value: bool):
     self.enableCV2_ = value
@@ -182,13 +174,11 @@ class DeviceRunner():
 
     return pipeline
 
-  @ImportantThread
+  @ImportantThread("Device Runner")
   def run(self, cameraData: CameraData):
     while not self.shouldStop_.is_set(): # To allow for pipeline recreation
       with dai.Device(self.createPipeline()) as device:
         self.device_ = device
-
-        self.irValue = self.irValue_
 
         if self.enablePointcloud_:
           self.pointcloud_.start(device)
@@ -206,6 +196,9 @@ class DeviceRunner():
         hasColor = False
 
         while not self.shouldStop_.is_set() and not self.shouldRestart_.is_set():
+          if self.oldIrValue_ != self.irValue_:
+            self.device_.setIrLaserDotProjectorBrightness(self.irValue_)
+            self.oldIrValue_ = self.irValue_
           if self.has_["Pointcloud"]:
             cameraData.setPointcloud(self.pointcloud_.pc_data)
             pass
@@ -271,3 +264,4 @@ class DeviceRunner():
       self.has_["IMU"] = self.enableIMU_
       self.has_["LR"] = self.enableLR_
       self.has_["Sync"] = self.enableSync_
+    return not self.shouldStop_.is_set()

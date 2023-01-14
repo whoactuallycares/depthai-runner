@@ -1,15 +1,21 @@
 from foxgloveComms import FoxgloveUploader
+from foxgloveRunner import FoxgloveRunner
 from deviceRunner import DeviceRunner
 from cameraData import CameraData
 import websockets
 import threading
 import asyncio
+import logging
 import time
 import json
 
+logging.basicConfig(level=logging.INFO)
 ENABLE_FOXGLOVE = True
 
 dr = DeviceRunner()
+fr = None
+
+
 async def messageHandler(websocket, path):
   global dr
   async for message in websocket:
@@ -22,16 +28,27 @@ async def messageHandler(websocket, path):
         dr.setActiveNN(command["value"])
       elif command["cmd"] == "enableIMU":
         dr.enableIMU(command["value"])
+        if command["value"] == True:
+          fr.add_channel("imu")
+          print("Add")
+        else:
+          fr.remove_channel("imu")
+          print("Rem")
       elif command["cmd"] == "enableSync":
         dr.enableSync(command["value"])
       elif command["cmd"] == "enablePointcloud":
         dr.enablePointcloud(command["value"])
+        if command["value"] == True:
+          fr.add_channel("pointcloud")
+        else:
+          fr.remove_channel("pointcloud")
       elif command["cmd"] == "enableLR":
         dr.enableLR(command["value"])
       elif command["cmd"] == "restart":
-        dr.restart()
-    except:
-      print(f"Received invalid json: {message}")
+        #dr.restart()
+        pass
+    except Exception as e:
+      logging.error(f"error : {e}")
 
 async def startServer():
   async with websockets.serve(messageHandler, "localhost", 8766):
@@ -42,6 +59,7 @@ async def startServer():
 if __name__ == "__main__":
 
   cd = CameraData()
+  fr = FoxgloveRunner(cd)
   shouldStop = threading.Event()
   shouldRestart = threading.Event()
   receiverThread = threading.Thread(target=asyncio.run, args=(startServer(),))
@@ -49,15 +67,17 @@ if __name__ == "__main__":
 
   drThread = dr.run(cd)
 
-  if ENABLE_FOXGLOVE:
-    fgUp = FoxgloveUploader()
-    fgUp.run(cd)
+  frThread = fr.run(asyncio.new_event_loop())
+  time.sleep(3)
+  fr.add_channel("color")
+  fr.add_channel("nn")
+  fr.add_channel("stereo")
+
+
+  if ENABLE_FOXGLOVE and False:
+    #fgUp = FoxgloveUploader()
+    #fgUp.run(cd)
     time.sleep(1)
-    #fgUp.add_video_channel("color")
-    #fgUp.add_video_channel("stereo")
-    #fgUp.add_video_channel("nn")
-    #fgUp.add_imu_channel()
-    #fgUp.add_pointcloud_channel()
   else:
     while True:
       try:
@@ -65,7 +85,9 @@ if __name__ == "__main__":
       except KeyboardInterrupt:
         break
   dr.stop()
+  fr.stop()
   shouldStop.set()
   receiverThread.join()
 
   drThread.set()
+  frThread.set()
