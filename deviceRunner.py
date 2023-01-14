@@ -116,7 +116,9 @@ class DeviceRunner():
 
     # Color camera
     camRgb = pipeline.createColorCamera()
+    camRgb.setResolution(dai.ColorCameraProperties.SensorResolution.THE_720_P)
     camRgb.setIspScale(1, 3)
+    camRgb.initialControl.setManualFocus(130)
     camRgb.setColorOrder(dai.ColorCameraProperties.ColorOrder.RGB)
 
     colorOut = pipeline.createXLinkOut()
