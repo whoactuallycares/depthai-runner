@@ -2,7 +2,6 @@ from threadHelper import ImportantThread
 from foxgloveRunner import FoxgloveRunner
 from deviceRunner import DeviceRunner
 import websockets
-import threading
 import asyncio
 import logging
 import json

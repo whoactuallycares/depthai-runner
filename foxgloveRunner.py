@@ -11,7 +11,6 @@ from cameraData import CameraData
 import google.protobuf.message
 from base64 import b64encode
 from typing import Set, Type
-import threading
 import logging
 import asyncio
 import json
