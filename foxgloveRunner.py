@@ -56,14 +56,14 @@ class FoxgloveRunner():
     channel = next(filter(lambda chan: chan["name"] == name, self.channels_))
     channel["name"] = None # Clear name to signal that it's supposed to be removed by the main thread
 
-  async def send_pointcloud(self, camData, channel):
-    pcData = camData.getPointcloud()
+  async def send_pointcloud(self, channel):
+    pcData = self.cameraData_.getPointcloud()
     if pcData is None:
       return
     pointcloud = PointCloud()
     pointcloud.timestamp.FromNanoseconds(time.time_ns())
     pointcloud.frame_id = "test"
-    pointcloud.data = pcData.tobytes()
+    pointcloud.data = pcData
     pointcloud.point_stride = 4 * 7
     pointcloud.fields.append(PackedElementField(name="x", offset=0, type=7)) # FLOAT32
     pointcloud.fields.append(PackedElementField(name="y", offset=4, type=7)) # FLOAT32
@@ -140,7 +140,7 @@ class FoxgloveRunner():
             self.channels_.remove(channel)
             continue
           elif channel["name"] == "pointcloud":
-            await self.send_pointcloud(self.cameraData_, channel)
+            await self.send_pointcloud(channel)
           elif channel["name"] == "imu":
             if self.cameraData_.getIMU() != {}:
               await server.send_message(channel["id"], time.time_ns(), json.dumps(self.cameraData_.getIMU()).encode("utf8"))

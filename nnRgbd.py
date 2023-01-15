@@ -121,7 +121,7 @@ class RGBDNetwork():
             arrColors = np.asarray(pcd.colors, dtype=np.float64).astype(np.float32).reshape((-1,3)).transpose()
             alpha = np.ones((arrColors.shape[1]), dtype=np.float32)
             done = np.vstack((arrPoints, arrColors, alpha))
-            self.pc_data = done.transpose()
+            self.pc_data = done.transpose().tobytes()
 
       key = cv2.waitKey(1)
       if key == ord("q"):
