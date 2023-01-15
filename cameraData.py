@@ -12,6 +12,8 @@ class CameraData():
     #self.colorFrame = np.full((1000, 1000, 3), 255, dtype=np.uint8)
 
     emptyFrame = np.full((256, 256, 3), 0, dtype=np.uint8)
+    with open("splashscreenPointcloud.bin", "rb") as file:
+      self.emptyPointcloud = file.read()
 
     self.colorFrame =  emptyFrame
     self.stereoFrame = emptyFrame
@@ -19,7 +21,7 @@ class CameraData():
     self.rightFrame = emptyFrame
     self.nnFrame = emptyFrame
     self.imu = {}
-    self.pointcloud = np.zeros((3))
+    self.pointcloud = self.emptyPointcloud
     self.lock = threading.Lock()
 
   def __getData(self, name: str) -> any:
