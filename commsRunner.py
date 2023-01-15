@@ -18,7 +18,12 @@ class CommsRunner():
       try:
         print(f"Got json command {message}")
         command = json.loads(message)
-        if command["cmd"] == "setIRBrightness":
+        if not "cmd" in command:
+          print(command)
+          for k, v in self.dr_.has_.items():
+            await websocket.send(json.dumps({"property": k, "value": v}))
+          await websocket.send(json.dumps({"property": "ir", "value": self.dr_.irValue_}))
+        elif command["cmd"] == "setIRBrightness":
           self.dr_.setIR(int(command["value"]))
         elif command["cmd"] == "setActiveNN":
           self.dr_.setActiveNN(command["value"])
@@ -39,7 +44,7 @@ class CommsRunner():
         elif command["cmd"] == "enableLR":
           self.dr_.enableLR(command["value"])
         elif command["cmd"] == "restart":
-          #self.dr_.restart()
+          self.dr_.restart()
           pass
       except Exception as e:
         logging.error(f"error : {e}")
