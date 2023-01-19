@@ -56,18 +56,18 @@ class DeviceRunner():
     self.shouldRestart_ = threading.Event()
     self.enableCV2_ = False
     self.enableFoxglove_ = True
-    self.enableIMU_ = True
-    self.enablePointcloud_ = True
+    self.enableIMU_ = False
+    self.enablePointcloud_ = False
     self.enableLR_ = False
     self.enableSync_ = False
     self.activeNetwork_ = "gaze"
     # Real values currently on the camera
     self.has_ = {
-      "IMU": True,
-      "Pointcloud": True,
-      "LR": False,
-      "Sync": False,
-      "NN": "gaze",
+      "IMU": self.enableIMU_,
+      "Pointcloud": self.enablePointcloud_,
+      "LR": self.enableLR_,
+      "Sync": self.enableSync_,
+      "NN": self.activeNetwork_,
     }
     self.cmdLock_ = threading.Lock()
     self.commands_ = []
@@ -117,7 +117,7 @@ class DeviceRunner():
     # Color camera
     camRgb = pipeline.createColorCamera()
     camRgb.setResolution(dai.ColorCameraProperties.SensorResolution.THE_720_P)
-    camRgb.setIspScale(1, 3)
+    camRgb.setIspScale(1, 2)
     camRgb.initialControl.setManualFocus(130)
     camRgb.setColorOrder(dai.ColorCameraProperties.ColorOrder.RGB)
 
@@ -128,7 +128,7 @@ class DeviceRunner():
     # Left camera output
     left = pipeline.createMonoCamera()
     left.setBoardSocket(dai.CameraBoardSocket.LEFT)
-    left.setResolution(dai.MonoCameraProperties.SensorResolution.THE_400_P)
+    left.setResolution(dai.MonoCameraProperties.SensorResolution.THE_720_P)
 
     if self.enableLR_:
       leftOut = pipeline.createXLinkOut()
@@ -138,7 +138,7 @@ class DeviceRunner():
     # Right camera output
     right = pipeline.createMonoCamera()
     right.setBoardSocket(dai.CameraBoardSocket.RIGHT)
-    right.setResolution(dai.MonoCameraProperties.SensorResolution.THE_400_P)
+    right.setResolution(dai.MonoCameraProperties.SensorResolution.THE_720_P)
 
     if self.enableLR_:
       rightOut = pipeline.createXLinkOut()
@@ -234,7 +234,7 @@ class DeviceRunner():
             stereoFrame = qStereo.get().getCvFrame() * 10
             in8bit = map_uint16_to_uint8(stereoFrame, 0, 2**16 - 1)
             lut = np.arange(256, dtype=np.uint8)[::-1]
-            pretty8bit = cv2.applyColorMap(cv2.LUT(in8bit, lut), cv2.COLORMAP_JET)
+            pretty8bit = cv2.applyColorMap(cv2.LUT(in8bit, lut), cv2.COLORMAP_PLASMA)
             cameraData.setStereoFrame(pretty8bit)
             if self.enableCV2_:
               cv2.imshow("stereo", pretty8bit)
